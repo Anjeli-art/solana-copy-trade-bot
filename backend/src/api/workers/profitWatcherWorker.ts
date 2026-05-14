@@ -125,7 +125,9 @@ async function inspectPosition(
       ? `Target reached: ${multiplier.toFixed(4)}x >= ${targetMultiplier}x`
       : isTimeout
         ? `Position timeout reached: ${positionTimeoutMinutes} minutes`
-      : `Stop loss reached: ${multiplier.toFixed(4)}x <= ${stopLossMultiplier}x`,
+        : `Stop loss reached: ${multiplier.toFixed(4)}x <= ${stopLossMultiplier}x`,
+    wallet: position.sourceTrader,
+    trader: position.sourceTrader,
     tokenMint: position.tokenMint,
     positionId: position.id,
     metadata: {
@@ -153,6 +155,8 @@ async function inspectPosition(
     level: shouldTakeProfit ? "info" : "warn",
     event: shouldTakeProfit ? "AUTO_SELL_EXECUTED" : isTimeout ? "TIMEOUT_SELL_EXECUTED" : "STOP_LOSS_SELL_EXECUTED",
     message: `Auto sold ${position.tokenMint} through Jupiter by ${closeReason}`,
+    wallet: position.sourceTrader,
+    trader: position.sourceTrader,
     tokenMint: position.tokenMint,
     positionId: position.id,
     signature: result.signature,
@@ -222,6 +226,8 @@ export async function startProfitWatcherWorker() {
             level: "error",
             event: "PROFIT_WATCHER_POSITION_ERROR",
             message: error instanceof Error ? error.message : "Unknown position watcher error",
+            wallet: position.sourceTrader,
+            trader: position.sourceTrader,
             tokenMint: position.tokenMint,
             positionId: position.id
           });

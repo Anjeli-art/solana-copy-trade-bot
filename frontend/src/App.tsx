@@ -2,8 +2,10 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   addTrackedTrader,
   closeActivePosition,
+  deleteLog,
   deleteTrackedTrader,
   getLogs,
+  getTraderAnalytics,
   getTradingStatus,
   getState,
   refreshWallet,
@@ -14,7 +16,8 @@ import {
 import { MetricsGrid } from "./components/MetricsGrid";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
-import type { BotLog, BotWallet, ClosedPosition, Position, Trader, View } from "./types";
+import type { BotLog, BotWallet, ClosedPosition, Position, Trader, TraderAnalytics, View } from "./types";
+import { AnalyticsView } from "./views/AnalyticsView";
 import { DashboardView } from "./views/DashboardView";
 import { LogsView } from "./views/LogsView";
 import { PositionsView } from "./views/PositionsView";
@@ -37,6 +40,7 @@ export function App() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [closedPositions, setClosedPositions] = useState<ClosedPosition[]>([]);
   const [logs, setLogs] = useState<BotLog[]>([]);
+  const [analytics, setAnalytics] = useState<TraderAnalytics[]>([]);
   const [wallet, setWallet] = useState<BotWallet>(EMPTY_WALLET);
   const [fallbackSolPriceUsd, setFallbackSolPriceUsd] = useState(0);
   const [walletAddress, setWalletAddress] = useState("");
@@ -96,9 +100,20 @@ export function App() {
     }
   }
 
+  async function refreshAnalytics() {
+    try {
+      setApiError("");
+      const nextAnalytics = await getTraderAnalytics();
+      setAnalytics(nextAnalytics);
+    } catch (fetchError) {
+      setApiError(fetchError instanceof Error ? fetchError.message : "Failed to load analytics");
+    }
+  }
+
   useEffect(() => {
     refreshState();
     refreshLogs();
+    refreshAnalytics();
   }, []);
 
   useEffect(() => {
@@ -130,6 +145,7 @@ export function App() {
 
     const stateTimer = window.setInterval(() => {
       refreshState();
+      refreshAnalytics();
     }, tradingEnabled ? 30000 : 60000);
 
     return () => {
@@ -257,8 +273,19 @@ export function App() {
       setPositions(result.activePositions);
       setClosedPositions(result.closedPositions);
       setWallet(result.wallet);
+      await refreshAnalytics();
     } catch (submitError) {
       setApiError(submitError instanceof Error ? submitError.message : "Failed to close position");
+    }
+  }
+
+  async function removeLog(id: string) {
+    try {
+      setApiError("");
+      await deleteLog(id);
+      setLogs((current) => current.filter((log) => log.id !== id));
+    } catch (submitError) {
+      setApiError(submitError instanceof Error ? submitError.message : "Failed to delete log");
     }
   }
 
@@ -316,8 +343,9 @@ export function App() {
             removeTrader={removeTrader}
           />
         ) : null}
+        {activeView === "analytics" ? <AnalyticsView traders={analytics} /> : null}
         {activeView === "logs" ? (
-          <LogsView logs={logs} isRefreshing={isLogsRefreshing} onRefresh={refreshLogs} />
+          <LogsView logs={logs} isRefreshing={isLogsRefreshing} onDeleteLog={removeLog} onRefresh={refreshLogs} />
         ) : null}
       </section>
     </main>

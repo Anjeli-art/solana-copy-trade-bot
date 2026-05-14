@@ -93,6 +93,7 @@ db.exec(`
     level TEXT NOT NULL,
     event TEXT NOT NULL,
     message TEXT NOT NULL,
+    wallet TEXT,
     trader TEXT,
     token_mint TEXT,
     signature TEXT,
@@ -110,4 +111,9 @@ if (!settingsColumns.some((column) => column.name === "stop_loss_multiplier")) {
 }
 if (!settingsColumns.some((column) => column.name === "position_timeout_minutes")) {
   db.exec("ALTER TABLE bot_settings ADD COLUMN position_timeout_minutes REAL NOT NULL DEFAULT 120");
+}
+
+const logColumns = db.prepare("PRAGMA table_info(bot_logs)").all() as Array<{ name: string }>;
+if (!logColumns.some((column) => column.name === "wallet")) {
+  db.exec("ALTER TABLE bot_logs ADD COLUMN wallet TEXT");
 }

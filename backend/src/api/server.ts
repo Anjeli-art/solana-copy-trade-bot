@@ -1,5 +1,6 @@
 import http from "http";
 import { sendError, sendJson, sendNoContent } from "./http/response";
+import { handleAnalytics } from "./routes/analytics";
 import { handleActivePositions, handleClosedPositions } from "./routes/positions";
 import { handleLogs } from "./routes/logs";
 import { handleRaydium } from "./routes/raydium";
@@ -62,7 +63,12 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (parts[0] === "api" && parts[1] === "logs") {
-      await handleLogs(request, response);
+      await handleLogs(request, response, parts[2]);
+      return;
+    }
+
+    if (parts[0] === "api" && parts[1] === "analytics") {
+      await handleAnalytics(request, response, parts[2]);
       return;
     }
 

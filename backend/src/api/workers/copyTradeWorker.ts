@@ -44,6 +44,32 @@ function now() {
   return new Date().toISOString();
 }
 
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Unknown RPC request error";
+}
+
+function logRpcRequestFailed(input: {
+  method: string;
+  trader: string;
+  signature?: string;
+  endpoint?: string;
+  error: unknown;
+}) {
+  createBotLog({
+    level: "error",
+    event: "RPC_REQUEST_FAILED",
+    message: getErrorMessage(input.error),
+    wallet: input.trader,
+    trader: input.trader,
+    signature: input.signature,
+    metadata: {
+      method: input.method,
+      endpoint: input.endpoint,
+      signature: input.signature
+    }
+  });
+}
+
 function isProcessed(signature: string) {
   const row = db.prepare("SELECT signature FROM processed_signatures WHERE signature = ?").get(signature);
   return Boolean(row);
@@ -226,20 +252,43 @@ async function processTraderSignatures(
 ) {
   const state = await readState();
   const wallet = await refreshWalletBalance(state.wallet);
-  const signatures = await connection.getSignaturesForAddress(new PublicKey(trader), {
-    limit: getSignatureLimit(),
-    until: lastSeenSignature
-  });
+  let signatures;
+  try {
+    signatures = await connection.getSignaturesForAddress(new PublicKey(trader), {
+      limit: getSignatureLimit(),
+      until: lastSeenSignature
+    });
+  } catch (error) {
+    logRpcRequestFailed({
+      method: "getSignaturesForAddress",
+      trader,
+      endpoint: getRpcEndpoint(),
+      error
+    });
+    throw error;
+  }
 
   for (const signatureInfo of signatures.reverse()) {
     if (signatureInfo.err || isProcessed(signatureInfo.signature)) {
       continue;
     }
 
-    const transaction = await connection.getParsedTransaction(signatureInfo.signature, {
-      commitment: "confirmed",
-      maxSupportedTransactionVersion: 0
-    });
+    let transaction;
+    try {
+      transaction = await connection.getParsedTransaction(signatureInfo.signature, {
+        commitment: "confirmed",
+        maxSupportedTransactionVersion: 0
+      });
+    } catch (error) {
+      logRpcRequestFailed({
+        method: "getParsedTransaction",
+        trader,
+        signature: signatureInfo.signature,
+        endpoint: getRpcEndpoint(),
+        error
+      });
+      throw error;
+    }
 
     if (!transaction) {
       continue;
@@ -276,7 +325,18 @@ export async function startCopyTradeWorker() {
     for (const trader of traders) {
       try {
         if (!includeHistory && !lastSeenByTrader.has(trader.address)) {
-          const latest = await connection.getSignaturesForAddress(new PublicKey(trader.address), { limit: 1 });
+          let latest;
+          try {
+            latest = await connection.getSignaturesForAddress(new PublicKey(trader.address), { limit: 1 });
+          } catch (error) {
+            logRpcRequestFailed({
+              method: "getSignaturesForAddress",
+              trader: trader.address,
+              endpoint,
+              error
+            });
+            throw error;
+          }
           lastSeenByTrader.set(trader.address, latest[0]?.signature);
           continue;
         }

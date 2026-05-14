@@ -6,6 +6,7 @@ type CreateLogInput = {
   level?: BotLogLevel;
   event: string;
   message: string;
+  wallet?: string;
   trader?: string;
   tokenMint?: string;
   signature?: string;
@@ -18,6 +19,7 @@ type DbLog = {
   level: BotLogLevel;
   event: string;
   message: string;
+  wallet: string | null;
   trader: string | null;
   token_mint: string | null;
   signature: string | null;
@@ -32,6 +34,7 @@ function toLog(row: DbLog): BotLog {
     level: row.level,
     event: row.event,
     message: row.message,
+    wallet: row.wallet || row.trader || undefined,
     trader: row.trader || undefined,
     tokenMint: row.token_mint || undefined,
     signature: row.signature || undefined,
@@ -47,6 +50,7 @@ export function createBotLog(input: CreateLogInput) {
     level: input.level || "info",
     event: input.event,
     message: input.message,
+    wallet: input.wallet || input.trader,
     trader: input.trader,
     tokenMint: input.tokenMint,
     signature: input.signature,
@@ -58,15 +62,16 @@ export function createBotLog(input: CreateLogInput) {
   db.prepare(
     `
       INSERT INTO bot_logs (
-        id, level, event, message, trader, token_mint, signature, position_id, metadata, created_at
+        id, level, event, message, wallet, trader, token_mint, signature, position_id, metadata, created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `
   ).run(
     log.id,
     log.level,
     log.event,
     log.message,
+    log.wallet || null,
     log.trader || null,
     log.tokenMint || null,
     log.signature || null,
@@ -84,4 +89,9 @@ export function listBotLogs(limit = 200) {
     .prepare("SELECT * FROM bot_logs ORDER BY created_at DESC LIMIT ?")
     .all(normalizedLimit) as DbLog[];
   return rows.map(toLog);
+}
+
+export function deleteBotLog(id: string) {
+  const result = db.prepare("DELETE FROM bot_logs WHERE id = ?").run(id);
+  return result.changes > 0;
 }

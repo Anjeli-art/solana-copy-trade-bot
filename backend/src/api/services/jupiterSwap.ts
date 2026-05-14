@@ -4,6 +4,7 @@ import { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { SPL_MINT_LAYOUT } from "@raydium-io/raydium-sdk";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { getRaydiumConnection, getTradingWallet } from "./raydiumSwap";
+import { createBotLog } from "./logs";
 import { WSOL_MINT } from "../platforms/platformDetector";
 
 dotenv.config({
@@ -49,6 +50,10 @@ function getJupiterHeaders() {
 function getSlippageBps() {
   const value = Number(process.env.JUPITER_SLIPPAGE_BPS);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : DEFAULT_SLIPPAGE_BPS;
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Unknown error";
 }
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -114,9 +119,25 @@ export async function getJupiterQuote(params: {
   url.searchParams.set("onlyDirectRoutes", "false");
   url.searchParams.set("asLegacyTransaction", "false");
 
-  return requestJson<JupiterQuote>(url.toString(), {
-    headers: getJupiterHeaders()
-  });
+  try {
+    return await requestJson<JupiterQuote>(url.toString(), {
+      headers: getJupiterHeaders()
+    });
+  } catch (error) {
+    createBotLog({
+      level: "error",
+      event: "JUPITER_QUOTE_FAILED",
+      message: getErrorMessage(error),
+      tokenMint: params.outputMint === WSOL_MINT ? params.inputMint : params.outputMint,
+      metadata: {
+        inputMint: params.inputMint,
+        outputMint: params.outputMint,
+        amount: params.amount,
+        slippageBps: params.slippageBps || getSlippageBps()
+      }
+    });
+    throw error;
+  }
 }
 
 async function executeJupiterSwap(params: {
@@ -126,51 +147,67 @@ async function executeJupiterSwap(params: {
   outputMint: string;
   rawAmount: string;
 }) {
-  const connection = getRaydiumConnection();
-  const wallet = getTradingWallet();
-  const before = await getTokenBalance(params.tokenMint);
-  const quoteResponse = await getJupiterQuote({
-    inputMint: params.inputMint,
-    outputMint: params.outputMint,
-    amount: params.rawAmount
-  });
-  const swapResponse: any = await requestJson(`${getJupiterBaseUrl()}/swap`, {
-    method: "POST",
-    headers: getJupiterHeaders(),
-    body: JSON.stringify({
-      quoteResponse,
-      userPublicKey: wallet.publicKey.toBase58(),
-      wrapAndUnwrapSol: true,
-      dynamicComputeUnitLimit: true,
-      prioritizationFeeLamports: "auto"
-    })
-  });
+  try {
+    const connection = getRaydiumConnection();
+    const wallet = getTradingWallet();
+    const before = await getTokenBalance(params.tokenMint);
+    const quoteResponse = await getJupiterQuote({
+      inputMint: params.inputMint,
+      outputMint: params.outputMint,
+      amount: params.rawAmount
+    });
+    const swapResponse: any = await requestJson(`${getJupiterBaseUrl()}/swap`, {
+      method: "POST",
+      headers: getJupiterHeaders(),
+      body: JSON.stringify({
+        quoteResponse,
+        userPublicKey: wallet.publicKey.toBase58(),
+        wrapAndUnwrapSol: true,
+        dynamicComputeUnitLimit: true,
+        prioritizationFeeLamports: "auto"
+      })
+    });
 
-  if (!swapResponse?.swapTransaction) {
-    throw new Error("Jupiter swap transaction was not returned");
-  }
+    if (!swapResponse?.swapTransaction) {
+      throw new Error("Jupiter swap transaction was not returned");
+    }
 
-  const transaction = VersionedTransaction.deserialize(Buffer.from(swapResponse.swapTransaction, "base64"));
-  transaction.sign([wallet]);
-  const signature = await connection.sendRawTransaction(transaction.serialize(), {
-    skipPreflight: false,
-    maxRetries: 3
-  });
-  await connection.confirmTransaction(
-    {
+    const transaction = VersionedTransaction.deserialize(Buffer.from(swapResponse.swapTransaction, "base64"));
+    transaction.sign([wallet]);
+    const signature = await connection.sendRawTransaction(transaction.serialize(), {
+      skipPreflight: false,
+      maxRetries: 3
+    });
+    await connection.confirmTransaction(
+      {
+        signature,
+        blockhash: transaction.message.recentBlockhash,
+        lastValidBlockHeight: swapResponse.lastValidBlockHeight
+      },
+      "confirmed"
+    );
+    const after = await getTokenBalance(params.tokenMint);
+
+    return {
       signature,
-      blockhash: transaction.message.recentBlockhash,
-      lastValidBlockHeight: swapResponse.lastValidBlockHeight
-    },
-    "confirmed"
-  );
-  const after = await getTokenBalance(params.tokenMint);
-
-  return {
-    signature,
-    tokenAmountDelta: params.side === "buy" ? Math.max(0, after - before) : Math.max(0, before - after),
-    quoteResponse
-  };
+      tokenAmountDelta: params.side === "buy" ? Math.max(0, after - before) : Math.max(0, before - after),
+      quoteResponse
+    };
+  } catch (error) {
+    createBotLog({
+      level: "error",
+      event: "JUPITER_SWAP_FAILED",
+      message: getErrorMessage(error),
+      tokenMint: params.tokenMint,
+      metadata: {
+        side: params.side,
+        inputMint: params.inputMint,
+        outputMint: params.outputMint,
+        rawAmount: params.rawAmount
+      }
+    });
+    throw error;
+  }
 }
 
 export async function executeJupiterBuy(tokenMint: string, amountSol: number): Promise<JupiterSwapResult> {

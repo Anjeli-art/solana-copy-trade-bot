@@ -1,43 +1,161 @@
-import { RefreshCw } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Check, ChevronDown, Copy, RefreshCw, Trash2 } from "lucide-react";
 import type { BotLog } from "../types";
+import { CalendarInput } from "../components/CalendarInput";
+import { TimeInput } from "../components/TimeInput";
 import { shortAddress } from "../utils/format";
 
 type LogsViewProps = {
   logs: BotLog[];
   isRefreshing: boolean;
+  onDeleteLog: (id: string) => void;
   onRefresh: () => void;
 };
 
-export function LogsView({ logs, isRefreshing, onRefresh }: LogsViewProps) {
+function toDateInputValue(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function getLogTimestamp(dateValue: string, timeValue: string, endOfDay = false) {
+  if (!dateValue && !timeValue) {
+    return undefined;
+  }
+
+  const date = dateValue || toDateInputValue(new Date());
+  const time = timeValue || (endOfDay ? "23:59" : "00:00");
+  return new Date(`${date}T${time}:00`).getTime();
+}
+
+function logDetailRows(log: BotLog) {
+  return [
+    { label: "Message", value: log.message },
+    { label: "Trader", value: log.trader || "-", copyValue: log.trader },
+    { label: "Token", value: log.tokenMint || "-", copyValue: log.tokenMint },
+    { label: "Signature", value: log.signature || "-" },
+    { label: "Position", value: log.positionId || "-" },
+    { label: "Metadata", value: log.metadata ? JSON.stringify(log.metadata, null, 2) : "-" }
+  ];
+}
+
+export function LogsView({ logs, isRefreshing, onDeleteLog, onRefresh }: LogsViewProps) {
+  const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [fromTime, setFromTime] = useState("");
+  const [toTime, setToTime] = useState("");
+  const filteredLogs = useMemo(() => {
+    const from = getLogTimestamp(fromDate, fromTime);
+    const to = getLogTimestamp(toDate, toTime, true);
+
+    return logs.filter((log) => {
+      const createdAt = new Date(log.createdAt).getTime();
+      if (from !== undefined && createdAt < from) return false;
+      if (to !== undefined && createdAt > to) return false;
+      return true;
+    });
+  }, [fromDate, fromTime, logs, toDate, toTime]);
+
+  async function copyLogValue(fieldId: string, value?: string) {
+    if (!value) {
+      return;
+    }
+
+    await navigator.clipboard.writeText(value);
+    setCopiedField(fieldId);
+    window.setTimeout(() => setCopiedField((current) => (current === fieldId ? null : current)), 1200);
+  }
+
   return (
-    <section className="positions-section">
-      <div className="section-head">
+    <section className="positions-section logs-section">
+      <div className="section-head logs-section-head">
         <div>
           <p className="eyebrow">Bot events</p>
           <h2>Logs</h2>
         </div>
-        <button className="refresh-button" type="button" aria-label="Refresh logs" disabled={isRefreshing} onClick={onRefresh}>
-          <RefreshCw size={16} className={isRefreshing ? "spin" : ""} />
-        </button>
+        <div className="logs-actions">
+          <CalendarInput label="From date" value={fromDate} onChange={setFromDate} />
+          <TimeInput label="From time" value={fromTime} onChange={setFromTime} />
+          <CalendarInput label="To date" value={toDate} onChange={setToDate} />
+          <TimeInput label="To time" value={toTime} onChange={setToTime} />
+          <button
+            className="refresh-button"
+            type="button"
+            aria-label="Refresh logs"
+            disabled={isRefreshing}
+            onClick={onRefresh}
+          >
+            <RefreshCw size={16} className={isRefreshing ? "spin" : ""} />
+          </button>
+        </div>
       </div>
       <div className="logs-table">
         <div className="logs-row logs-head">
+          <span></span>
           <span>Time</span>
           <span>Level</span>
           <span>Event</span>
+          <span>Wallet</span>
           <span>Token</span>
           <span>Message</span>
         </div>
-        {logs.length === 0 ? (
+        {filteredLogs.length === 0 ? (
           <div className="empty-state">No logs yet</div>
         ) : (
-          logs.map((log) => (
-            <div className="logs-row" key={log.id}>
-              <span>{new Date(log.createdAt).toLocaleString()}</span>
-              <strong className={`log-level ${log.level}`}>{log.level}</strong>
-              <span>{log.event}</span>
-              <span title={log.tokenMint}>{log.tokenMint ? shortAddress(log.tokenMint) : "-"}</span>
-              <span title={log.message}>{log.message}</span>
+          filteredLogs.map((log) => (
+            <div className={`log-entry ${expandedLogId === log.id ? "expanded" : ""}`} key={log.id}>
+              <button
+                className="logs-row"
+                type="button"
+                aria-expanded={expandedLogId === log.id}
+                onClick={() => setExpandedLogId(expandedLogId === log.id ? null : log.id)}
+              >
+                <ChevronDown size={16} className="log-expand-icon" />
+                <span>{new Date(log.createdAt).toLocaleString()}</span>
+                <strong className={`log-level ${log.level}`}>{log.level}</strong>
+                <span title={log.event}>{log.event}</span>
+                <span title={log.wallet || log.trader}>{log.wallet || log.trader ? shortAddress(log.wallet || log.trader || "") : "-"}</span>
+                <span title={log.tokenMint}>{log.tokenMint ? shortAddress(log.tokenMint) : "-"}</span>
+                <span title={log.message}>{log.message}</span>
+              </button>
+              {expandedLogId === log.id ? (
+                <div className="log-details">
+                  <div className="log-detail-actions">
+                    <button
+                      className="delete-log-button"
+                      type="button"
+                      onClick={() => onDeleteLog(log.id)}
+                    >
+                      <Trash2 size={14} />
+                      Delete log
+                    </button>
+                  </div>
+                  <div className="log-detail-grid">
+                    {logDetailRows(log).map((row) => {
+                      const fieldId = `${log.id}:${row.label}`;
+                      return (
+                      <div className="log-detail-row" key={row.label}>
+                        <span>{row.label}</span>
+                        <div className={`log-detail-value ${row.copyValue ? "copyable" : ""}`}>
+                          <code>{row.value}</code>
+                          {row.copyValue ? (
+                            <button
+                              className="copy-field-button"
+                              type="button"
+                              aria-label={`Copy ${row.label}`}
+                              onClick={() => copyLogValue(fieldId, row.copyValue)}
+                            >
+                              {copiedField === fieldId ? <Check size={14} /> : <Copy size={14} />}
+                              <span>{copiedField === fieldId ? "Copied" : "Copy"}</span>
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
             </div>
           ))
         )}

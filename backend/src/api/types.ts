@@ -55,6 +55,7 @@ export type BotLog = {
   level: BotLogLevel;
   event: string;
   message: string;
+  wallet?: string;
   trader?: string;
   tokenMint?: string;
   signature?: string;

@@ -1,4 +1,4 @@
-import { Activity, Bot, ClipboardList, Radio, Wallet } from "lucide-react";
+import { Activity, BarChart3, Bot, ClipboardList, Radio, Wallet } from "lucide-react";
 import type { View } from "../types";
 
 type SidebarProps = {
@@ -37,6 +37,14 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
         >
           <Radio size={18} />
           Traders
+        </button>
+        <button
+          className={`nav-item ${activeView === "analytics" ? "active" : ""}`}
+          type="button"
+          onClick={() => onViewChange("analytics")}
+        >
+          <BarChart3 size={18} />
+          Analytics
         </button>
         <button
           className={`nav-item ${activeView === "logs" ? "active" : ""}`}

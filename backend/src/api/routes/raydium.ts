@@ -4,6 +4,7 @@ import { readJsonBody } from "../http/request";
 import { sendError, sendJson } from "../http/response";
 import { findRaydiumPoolId } from "../services/raydiumSwap";
 import { executeJupiterBuy, executeJupiterSell, getJupiterTokenPriceUsd } from "../services/jupiterSwap";
+import { createBotLog } from "../services/logs";
 import { logTokenSafetyBeforeBuy } from "../services/tokenSafety";
 import { refreshWalletBalance } from "../services/walletBalance";
 import {
@@ -133,6 +134,20 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
       pnlUsd,
       wallet
     );
+    createBotLog({
+      event: "MANUAL_SELL_EXECUTED",
+      message: `Manual sold ${position.tokenMint} through Jupiter`,
+      wallet: position.sourceTrader,
+      trader: position.sourceTrader,
+      tokenMint: position.tokenMint,
+      positionId: position.id,
+      signature: result.signature,
+      metadata: {
+        exitPriceUsd: exitPriceUsd || position.currentPriceUsd,
+        outputSol: result.outputSol,
+        executionRoute: "Jupiter"
+      }
+    });
 
     sendJson(response, 200, {
       data: {

@@ -2,6 +2,7 @@ import path from "path";
 import dotenv from "dotenv";
 import { Connection, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { BOT_WALLET_ADDRESS } from "../constants";
+import { createBotLog } from "./logs";
 import type { BotWalletSnapshot } from "../types";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -47,7 +48,23 @@ export async function refreshWalletBalance(wallet: BotWalletSnapshot): Promise<B
   }
 
   const connection = new Connection(endpoint, "confirmed");
-  const lamports = await connection.getBalance(new PublicKey(address), "confirmed");
+  let lamports: number;
+  try {
+    lamports = await connection.getBalance(new PublicKey(address), "confirmed");
+  } catch (error) {
+    createBotLog({
+      level: "error",
+      event: "RPC_REQUEST_FAILED",
+      message: error instanceof Error ? error.message : "Unknown RPC request error",
+      wallet: address,
+      metadata: {
+        method: "getBalance",
+        endpoint,
+        address
+      }
+    });
+    throw error;
+  }
 
   return {
     ...wallet,

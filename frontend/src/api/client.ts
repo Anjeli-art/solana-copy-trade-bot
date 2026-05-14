@@ -1,4 +1,4 @@
-import type { BotLog, BotWallet, ClosedPosition, Position, Trader } from "../types";
+import type { BotLog, BotWallet, ClosedPosition, Position, Trader, TraderAnalytics } from "../types";
 
 type ApiResponse<T> = {
   data: T;
@@ -151,6 +151,16 @@ export function refreshWallet() {
 
 export function getLogs(limit = 200) {
   return request<BotLog[]>(`/api/logs?limit=${limit}`);
+}
+
+export function getTraderAnalytics() {
+  return request<TraderAnalytics[]>("/api/analytics/traders");
+}
+
+export function deleteLog(id: string) {
+  return request<{ id: string }>(`/api/logs/${id}`, {
+    method: "DELETE"
+  });
 }
 
 export function getTradingStatus() {

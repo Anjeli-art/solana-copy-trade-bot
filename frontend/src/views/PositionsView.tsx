@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Download } from "lucide-react";
 import type { ClosedFilter, ClosedPosition, Position } from "../types";
+import { CalendarInput } from "../components/CalendarInput";
 import { ClosedPositionRow, PositionRow } from "../components/PositionRow";
 import { toDateInputValue } from "../utils/format";
 import { exportClosedPositions, filterClosedPositions } from "../utils/positions";
@@ -64,22 +65,8 @@ export function PositionsView({ positions, closedPositions = [], compact = false
               </label>
               {closedFilter === "custom" ? (
                 <div className="date-range">
-                  <label>
-                    <span>From</span>
-                    <input
-                      type="date"
-                      value={customFrom}
-                      onChange={(event) => setCustomFrom(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    <span>To</span>
-                    <input
-                      type="date"
-                      value={customTo}
-                      onChange={(event) => setCustomTo(event.target.value)}
-                    />
-                  </label>
+                  <CalendarInput label="From" value={customFrom} onChange={setCustomFrom} allowClear={false} />
+                  <CalendarInput label="To" value={customTo} onChange={setCustomTo} allowClear={false} />
                 </div>
               ) : null}
               <button

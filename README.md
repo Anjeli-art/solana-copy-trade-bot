@@ -137,7 +137,6 @@ Required values:
 ```env
 PRIVATE_KEY=your_base58_private_key
 MAINNET_ENDPOINT=your_solana_rpc_https_url
-WS_MAINNET_ENDPOINT=your_solana_rpc_wss_url
 ```
 
 Optional values:
