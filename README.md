@@ -1,91 +1,223 @@
-# Pumpfun Copy Trading Sniper Bot with GRPC
+# Solana Copy Trade Bot
 
-## Contact
+Local Solana copy-trading bot with a Node.js backend, SQLite storage, and a React/Vite dashboard.
 
-   If you need help or upgraded version, plz contact here: 
-   
-   [Telegram](https://t.me/shiny0103)
-   
-   [Twitter](https://x.com/0xTan1319)
-  
-## Key Features
+The bot runs on your machine. It watches configured trader wallets, detects supported token buy transactions, copies the buy from the local trading wallet, tracks the opened position, and sells automatically when one of the configured exit rules is reached.
 
-### Token Creation and Multi-DEX Support
-   
-   Create your own Solana SPL tokens on mainnet via Pump.fun and swap tokens across multiple decentralized exchanges:
+## What Works Now
 
-   | Jupiter  | Raydium  | Orca | Meteora  | Pump.fun  | Integrated support |
+- Local npm workspace monorepo with `backend` and `frontend`.
+- Backend API on `127.0.0.1:3001`.
+- Frontend dashboard on `127.0.0.1:5173`.
+- SQLite persistence for settings, tracked traders, active positions, closed positions, processed signatures, and bot logs.
+- Manual management of tracked trader wallets from the dashboard.
+- Start/stop trading control from the dashboard.
+- RPC polling monitor for tracked trader wallets.
+- Buy detection for supported Solana venues.
+- Automatic copy-buy execution through Jupiter.
+- Automatic position tracking after a copied buy.
+- Automatic sell execution through Jupiter.
+- Manual sell button for open positions.
+- Closed positions history with filtering and export.
+- Bot logs page with polling updates.
+- Wallet balance display from the backend.
+- Configurable buy amount in SOL.
+- Configurable take-profit multiplier.
+- Configurable stop-loss multiplier.
+- Configurable position timeout in minutes.
+- Token safety warnings before buy.
+- Backend tests for core detection, settings, position rules, validation, and token safety helpers.
 
-   - Copy trading: Automatically replicates trades from a target address.
-     
-   - MEV Protection: Uses Jito block engine for front-running protection.
+## Supported Buy Detection
 
-   - Customizable Trading Settings: Supports slippage control, retry mechanisms, and fee optimization.
-   
-   - Efficient Transaction Execution: Leverages Jito and custom compute unit settings for optimal gas fees.
-   
-   - Cross-Platform Compatibility: Works on both Windows and Linux.
-     
-### Low-Latency Infrastructure
+The backend attempts to detect trader buys on:
 
-   Accelerate transaction finality using Jito and bloXroute for lightning-fast trades. Both capable of pushing your trasaction faster then any other service provider on the market
+- Raydium AMM / CPMM / CLMM
+- Orca Whirlpool
+- Meteora
+- Pump.fun bonding curve
+- PumpSwap
+- Jupiter routes
 
-   | Provider | Description |
-   |----------|---------------|
-   | Jito      | Fast trascation and optimizes transaction ordering and execution specifically |
-   | Bloxroute | Fast trascation and accelerates transaction propagation |
+Execution currently goes through Jupiter routes. This lets the bot copy buys and sell positions when Jupiter can build a route for the token.
 
-### Real-Time Market Data
+## Trading Flow
 
-   Fetch critical metrics for any liquidity pool in real-time with RPC calls:
-   - Price
-   - LP-burn percentage
-   - Pool reserve
-   - Market cap
+1. Add trader wallet addresses in the dashboard.
+2. Set buy amount in SOL.
+3. Set take-profit multiplier.
+4. Set stop-loss multiplier.
+5. Set position timeout.
+6. Click `Start trading`.
+7. The backend polls tracked trader wallets through the configured Solana RPC endpoint.
+8. When a supported trader buy is detected, the backend checks token safety and writes warnings to logs if needed.
+9. The bot buys the same token through Jupiter using the local trading wallet.
+10. The opened token appears as an active position.
+11. The profit watcher checks active positions using Jupiter quotes.
+12. The bot sells automatically on take-profit, stop-loss, or timeout.
+13. The position moves to closed positions.
+14. The frontend shows positions, wallet state, settings, traders, and logs.
 
-### Verify For This Bot
+## Exit Rules
 
-   1. Pumpfun grpc sniper
+The bot can close an open position for four reasons:
 
-   - Demo video:
+- `take-profit`: current price reaches the configured profit multiplier.
+- `stop-loss`: current price falls to the configured stop-loss multiplier.
+- `timeout`: position stays open longer than the configured timeout.
+- `manual`: user clicks manual sell from the dashboard.
 
-     [pumpfun sniper bot with grpc(buy token within 2s)](https://x.com/0xTan1319/status/1889395901938209056)
+## Token Safety Warnings
 
-   - Buy & Sell
+Before a buy, the backend checks the token and writes warnings to logs. These checks do not block the buy.
 
-     <a href="https://ibb.co/ks51qyxT"><img src="https://i.ibb.co/ks51qyxT/buy-2block.png" alt="buy-2block" border="0"></a> <a href="https://ibb.co/bMtsFKqL"><img src="https://i.ibb.co/bMtsFKqL/mint-2block.png" alt="mint-2block" border="0"></a>
+Current checks:
 
-   - Geyser gRPC Pump.fun Sniper Bot (Beta): 
-      
-      `https://solscan.io/account/TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM`
-   
-   - Geyser gRPC Pump.fun Sniper Bot (Speedest):
-      
-      ```bash
-      mint: https://solscan.io/tx/QKbc9RxNZPE7peDNPnxBtPMux2HfTfn9QN2AwEr7Z5P1SS1qw42FYZcXqzkm9APVkTH88ieZU4PUaCU93yPNfGa
-      buy: https://solscan.io/tx/5NV4oAJacFfNffAb55hkb6LEKsSTjgMd8vTzTvDKBLQvQ5XCogizBLShnpF89J8tqFrYJAHaUS5tmXtb6SBpEdNz
-      sell:
-      https://solscan.io/tx/5QDYSiST7KX9viNZXSeSATZYMJ5ioJrHJxqu9DVwFzREMarwwmaDXz7EYS1jC9oQq8z7V8GwTsEv94dSwdhU9s5b
+- freeze authority
+- mint authority
+- Token-2022 program
+- Token-2022 transfer fee extension
+- unavailable Jupiter buy route
+- unavailable Jupiter sell route
+- high round-trip quote loss
+- possible tax or weak liquidity
+- high price impact
 
-      ```
-      
-   2. Copy trading bot
+Warnings are saved as `TOKEN_SAFETY_WARNING` log events. If the check itself fails, the backend writes `TOKEN_SAFETY_CHECK_FAILED` and continues with the buy attempt.
 
-   - Demo video:
+## Dashboard
 
-     [Copy trading bot](https://github.com/user-attachments/assets/8fb518af-b54b-4bd6-a50a-cb206ff041a8)
-   
-   - Copy trading Test results
-     
-      -- Target buy tx: [https://solscan.io/tx/5tebXLW6pt1gtVwz2bsGMqE38hGhaJnpYykLhgVEt46QcRPqRo9MYdHazVaGkxSxQdBPKYF4SnMr6eETumtPoFCZ](https://solscan.io/tx/5tebXLW6pt1gtVwz2bsGMqE38hGhaJnpYykLhgVEt46QcRPqRo9MYdHazVaGkxSxQdBPKYF4SnMr6eETumtPoFCZ)
+The React dashboard includes:
 
-      -- Copy tx: [https://solscan.io/tx/4hdT1DcMnfqgf3x4F4KvtuP3NFAQHzH7h7sAJhdZx87uJPtvoYCoJ6nZk27pAYNYWZ7NF2m5xwssCc5JASPgi4dR](https://solscan.io/tx/4hdT1DcMnfqgf3x4F4KvtuP3NFAQHzH7h7sAJhdZx87uJPtvoYCoJ6nZk27pAYNYWZ7NF2m5xwssCc5JASPgi4dR)
+- main overview with backend status
+- trading start/stop control
+- wallet balance card
+- copy trading settings
+- tracked traders management
+- open positions
+- closed positions
+- export for closed positions
+- export for tracked traders
+- bot logs
 
-      -- Target sell tx: [https://solscan.io/tx/eETkb2ZyN1A5YKedGkSwcufVw8UznmH374NpR3R9ywQN6jG5BdzoVMK63ZFm9Hs6jQATr2sYpcDmpAAJaNajfmu](https://solscan.io/tx/eETkb2ZyN1A5YKedGkSwcufVw8UznmH374NpR3R9ywQN6jG5BdzoVMK63ZFm9Hs6jQATr2sYpcDmpAAJaNajfmu)
+The frontend reads backend state through polling.
 
-      -- Copy sell tx: [https://solscan.io/tx/3bcpUucuraFsDVm3RFbGuL6AmWc67k37yk315jvxDCDcME1LE6Q4i1wyNT6CuN56W9tSTuj13cuNL7PcJUehZ7BF](https://solscan.io/tx/3bcpUucuraFsDVm3RFbGuL6AmWc67k37yk315jvxDCDcME1LE6Q4i1wyNT6CuN56W9tSTuj13cuNL7PcJUehZ7BF)
+## Local Storage
 
-### Extensibility
-   
-   Our comprehensive toolkit provides everything you need to create your own custom trading bot, tailored to your unique strategies and requirements.
+The backend uses SQLite for local persistence.
 
+Stored data includes:
+
+- settings
+- tracked traders
+- active positions
+- closed positions
+- processed trader transaction signatures
+- bot logs
+
+Processed signatures are stored to avoid copying the same trader transaction twice.
+
+## Requirements
+
+- Node.js `24.x`
+- npm
+- Solana HTTP RPC endpoint
+- Local trading wallet private key in base58 format
+
+## Environment
+
+Create a local env file:
+
+```text
+backend/src/helpers/.env
+```
+
+Required values:
+
+```env
+PRIVATE_KEY=your_base58_private_key
+MAINNET_ENDPOINT=your_solana_rpc_https_url
+WS_MAINNET_ENDPOINT=your_solana_rpc_wss_url
+```
+
+Optional values:
+
+```env
+JUPITER_SWAP_API_URL=https://lite-api.jup.ag/swap/v1
+JUPITER_API_KEY=
+JUPITER_SLIPPAGE_BPS=500
+COPY_TRADE_POLL_MS=5000
+COPY_TRADE_SIGNATURE_LIMIT=20
+COPY_TRADE_INCLUDE_HISTORY=false
+```
+
+The env file is ignored by git. Never commit private keys or RPC keys.
+
+## Install
+
+Install dependencies from the repository root:
+
+```bash
+npm install
+```
+
+## Run
+
+Start backend:
+
+```bash
+npm run backend
+```
+
+Start frontend:
+
+```bash
+npm run frontend
+```
+
+Or run both together:
+
+```bash
+npm run dev
+```
+
+Frontend:
+
+```text
+http://127.0.0.1:5173
+```
+
+Backend:
+
+```text
+http://127.0.0.1:3001
+```
+
+## Tests
+
+Run backend tests:
+
+```bash
+npm test
+```
+
+Run backend typecheck:
+
+```bash
+npm run typecheck:api
+```
+
+Build frontend:
+
+```bash
+npm run build:frontend
+```
+
+## Current Limitations
+
+- Monitoring currently uses RPC polling, not gRPC streaming.
+- Execution uses Jupiter routes instead of native per-platform swap adapters.
+- Token safety checks are warning-only and do not block trades.
+- Honeypot and tax detection is based on quote behavior, not a guaranteed sell simulation.
+- Slippage is configured through backend env, not from the dashboard yet.
+- Real trading can lose money because of latency, slippage, failed routes, low liquidity, price impact, and token contract risk.
