@@ -17,7 +17,9 @@ export type PlatformName = "Raydium" | "Orca" | "Meteora" | "Pump.fun" | "PumpSw
 export type ActivePosition = {
   id: string;
   tokenSymbol: string;
+  tokenName?: string;
   tokenMint: string;
+  tokenImage?: string;
   sourceTrader: string;
   buyPlatform: PlatformName;
   buyTx?: string;

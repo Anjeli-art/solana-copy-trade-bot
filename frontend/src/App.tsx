@@ -235,6 +235,7 @@ export function App() {
       setDraftPositionTimeoutMinutes(settings.positionTimeoutMinutes);
       setBuyAmountSol(settings.buyAmountSol);
       setDraftBuyAmountSol(settings.buyAmountSol);
+      await refreshState();
     } catch (submitError) {
       setApiError(submitError instanceof Error ? submitError.message : "Failed to save trading settings");
     }

@@ -28,7 +28,10 @@ type DbTrackedTrader = {
 type DbActivePosition = {
   id: string;
   token_symbol: string;
+  token_metadata_symbol: string | null;
+  token_name: string | null;
   token_mint: string;
+  token_image: string | null;
   source_trader: string;
   buy_platform: string;
   buy_tx: string | null;
@@ -44,7 +47,10 @@ type DbActivePosition = {
 type DbClosedPosition = {
   id: string;
   token_symbol: string;
+  token_metadata_symbol: string | null;
+  token_name: string | null;
   token_mint: string;
+  token_image: string | null;
   source_trader: string;
   buy_platform: string;
   buy_tx: string | null;
@@ -147,8 +153,10 @@ function toPlatformName(value: string): PlatformName {
 function toActivePosition(row: DbActivePosition): ActivePosition {
   return {
     id: row.id,
-    tokenSymbol: row.token_symbol,
+    tokenSymbol: row.token_metadata_symbol || row.token_symbol,
+    tokenName: row.token_name || undefined,
     tokenMint: row.token_mint,
+    tokenImage: row.token_image || undefined,
     sourceTrader: row.source_trader,
     buyPlatform: toPlatformName(row.buy_platform),
     buyTx: row.buy_tx || undefined,
@@ -169,8 +177,10 @@ function toClosedPosition(row: DbClosedPosition): ClosedPosition {
 
   return {
     id: row.id,
-    tokenSymbol: row.token_symbol,
+    tokenSymbol: row.token_metadata_symbol || row.token_symbol,
+    tokenName: row.token_name || undefined,
     tokenMint: row.token_mint,
+    tokenImage: row.token_image || undefined,
     sourceTrader: row.source_trader,
     buyPlatform: toPlatformName(row.buy_platform),
     buyTx: row.buy_tx || undefined,
@@ -230,10 +240,32 @@ export async function readState(): Promise<ApiState> {
     .prepare("SELECT address, label, enabled, created_at FROM tracked_traders ORDER BY created_at DESC")
     .all() as DbTrackedTrader[];
   const activePositions = db
-    .prepare("SELECT * FROM active_positions ORDER BY opened_at DESC")
+    .prepare(
+      `
+        SELECT
+          active_positions.*,
+          token_metadata.name AS token_name,
+          token_metadata.symbol AS token_metadata_symbol,
+          token_metadata.image AS token_image
+        FROM active_positions
+        LEFT JOIN token_metadata ON token_metadata.mint = active_positions.token_mint
+        ORDER BY active_positions.opened_at DESC
+      `
+    )
     .all() as DbActivePosition[];
   const closedPositions = db
-    .prepare("SELECT * FROM closed_positions ORDER BY closed_at DESC")
+    .prepare(
+      `
+        SELECT
+          closed_positions.*,
+          token_metadata.name AS token_name,
+          token_metadata.symbol AS token_metadata_symbol,
+          token_metadata.image AS token_image
+        FROM closed_positions
+        LEFT JOIN token_metadata ON token_metadata.mint = closed_positions.token_mint
+        ORDER BY closed_positions.closed_at DESC
+      `
+    )
     .all() as DbClosedPosition[];
 
   return normalizeState({
@@ -644,7 +676,7 @@ export async function addActivePosition(position: ActivePosition, wallet?: BotWa
             address = excluded.address,
             sol_balance = excluded.sol_balance,
             sol_price_usd = excluded.sol_price_usd,
-            realized_pnl_today_usd = bot_wallet.realized_pnl_today_usd + ?,
+            realized_pnl_today_usd = excluded.realized_pnl_today_usd,
             last_updated = excluded.last_updated,
             updated_at = excluded.updated_at
         `
@@ -723,8 +755,7 @@ export async function closeActivePosition(position: ClosedPosition, pnlUsd: numb
         wallet.solPriceUsd,
         wallet.realizedPnlTodayUsd + pnlUsd,
         new Date().toISOString(),
-        savedAt,
-        pnlUsd
+        savedAt
       );
       return;
     }

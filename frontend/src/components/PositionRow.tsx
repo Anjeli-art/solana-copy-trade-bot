@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { CircleDollarSign } from "lucide-react";
+import { getTokenMetadata } from "../api/client";
 import type { ClosedPosition, Position } from "../types";
 import { formatNumber, formatUsd, shortAddress } from "../utils/format";
 import { getPnl } from "../utils/positions";
@@ -8,17 +10,72 @@ type PositionRowProps = {
   onSell?: (id: string) => void;
 };
 
+const tokenImageCache = new Map<string, string | null>();
+
+function TokenIcon({ mint, symbol, tokenImage }: { mint: string; symbol: string; tokenImage?: string }) {
+  const [image, setImage] = useState(() => tokenImage || tokenImageCache.get(mint));
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setFailed(false);
+
+    if (tokenImage) {
+      tokenImageCache.set(mint, tokenImage);
+      setImage(tokenImage);
+      return;
+    }
+
+    if (tokenImageCache.has(mint)) {
+      setImage(tokenImageCache.get(mint));
+      return;
+    }
+
+    setImage(undefined);
+    getTokenMetadata(mint)
+      .then((metadata) => {
+        const nextImage = metadata.image || null;
+        tokenImageCache.set(mint, nextImage);
+        if (!cancelled) setImage(nextImage);
+      })
+      .catch(() => {
+        tokenImageCache.set(mint, null);
+        if (!cancelled) setImage(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mint, tokenImage]);
+
+  if (image && !failed) {
+    return (
+      <div className="token-icon has-image">
+        <img src={image} alt={symbol} loading="lazy" onError={() => setFailed(true)} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="token-icon">
+      <CircleDollarSign size={18} />
+    </div>
+  );
+}
+
 export function PositionRow({ position, onSell }: PositionRowProps) {
   const { pnlPercent, pnlUsd } = getPnl(position);
+  const tokenLabel = position.tokenName || position.tokenSymbol;
+  const tokenDetails = position.tokenName
+    ? `${position.tokenSymbol} • ${shortAddress(position.tokenMint)}`
+    : shortAddress(position.tokenMint);
 
   return (
     <article className="position-row">
-      <div className="token-icon">
-        <CircleDollarSign size={18} />
-      </div>
+      <TokenIcon mint={position.tokenMint} symbol={position.tokenSymbol} tokenImage={position.tokenImage} />
       <div className="position-token">
-        <strong>{position.tokenSymbol}</strong>
-        <span title={position.tokenMint}>{shortAddress(position.tokenMint)}</span>
+        <strong title={tokenLabel}>{tokenLabel}</strong>
+        <span title={position.tokenMint}>{tokenDetails}</span>
       </div>
       <div className="position-cell">
         <span>Entry</span>
@@ -49,15 +106,17 @@ export function ClosedPositionRow({ position }: { position: ClosedPosition }) {
     ...position,
     currentPrice: position.exitPrice
   });
+  const tokenLabel = position.tokenName || position.tokenSymbol;
+  const tokenDetails = position.tokenName
+    ? `${position.tokenSymbol} • ${shortAddress(position.tokenMint)}`
+    : shortAddress(position.tokenMint);
 
   return (
     <article className="position-row closed">
-      <div className="token-icon">
-        <CircleDollarSign size={18} />
-      </div>
+      <TokenIcon mint={position.tokenMint} symbol={position.tokenSymbol} tokenImage={position.tokenImage} />
       <div className="position-token">
-        <strong>{position.tokenSymbol}</strong>
-        <span title={position.tokenMint}>{shortAddress(position.tokenMint)}</span>
+        <strong title={tokenLabel}>{tokenLabel}</strong>
+        <span title={position.tokenMint}>{tokenDetails}</span>
       </div>
       <div className="position-cell">
         <span>Entry</span>

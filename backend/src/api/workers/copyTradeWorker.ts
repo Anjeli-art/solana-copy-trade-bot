@@ -7,6 +7,7 @@ import { detectTraderPlatformBuys, type DetectedTraderBuy } from "../platforms/p
 import { executeJupiterBuy } from "../services/jupiterSwap";
 import { createBotLog } from "../services/logs";
 import { logTokenSafetyBeforeBuy } from "../services/tokenSafety";
+import { getTokenMetadata } from "../services/tokenMetadata";
 import { refreshWalletBalance } from "../services/walletBalance";
 import { addActivePosition, readState } from "../state/store";
 
@@ -101,11 +102,39 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
 
   const state = await readState();
   const amountSol = state.settings.buyAmountSol;
+  const existingPosition = state.activePositions.find((position) => position.tokenMint === buy.tokenMint);
+
+  if (existingPosition) {
+    const message = `Buy skipped: active position already exists for ${buy.tokenMint}`;
+    markProcessed({
+      signature: buy.signature,
+      trader: buy.trader,
+      tokenMint: buy.tokenMint,
+      status: "skipped",
+      message
+    });
+    createBotLog({
+      level: "warn",
+      event: "BUY_SKIPPED_POSITION_EXISTS",
+      message,
+      trader: buy.trader,
+      tokenMint: buy.tokenMint,
+      signature: buy.signature,
+      positionId: existingPosition.id,
+      metadata: {
+        existingPositionId: existingPosition.id,
+        existingPositionTrader: existingPosition.sourceTrader,
+        traderSpentSol: buy.spentSol,
+        platform: buy.platform
+      }
+    });
+    return;
+  }
 
   try {
     const wallet = await refreshWalletBalance(state.wallet);
     if (wallet.solBalance < amountSol + FEE_RESERVE_SOL) {
-      const message = `Trading stopped: wallet balance ${wallet.solBalance.toFixed(6)} SOL is below required ${(amountSol + FEE_RESERVE_SOL).toFixed(6)} SOL`;
+      const message = `Buy skipped: wallet balance ${wallet.solBalance.toFixed(6)} SOL is below required ${(amountSol + FEE_RESERVE_SOL).toFixed(6)} SOL`;
       markProcessed({
         signature: buy.signature,
         trader: buy.trader,
@@ -114,8 +143,8 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
         message
       });
       createBotLog({
-        level: "error",
-        event: "BUY_STOPPED_INSUFFICIENT_SOL",
+        level: "warn",
+        event: "BUY_SKIPPED_INSUFFICIENT_SOL",
         message,
         trader: buy.trader,
         tokenMint: buy.tokenMint,
@@ -126,7 +155,7 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
           feeReserveSol: FEE_RESERVE_SOL
         }
       });
-      process.exit(2);
+      return;
     }
 
     createBotLog({
@@ -156,12 +185,14 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
     const tokenAmount = result.tokenAmountDelta || 0;
     const amountUsd = amountSol * wallet.solPriceUsd;
     const entryPriceUsd = tokenAmount > 0 && amountUsd > 0 ? amountUsd / tokenAmount : 0;
+    const tokenMetadata = await getTokenMetadata(buy.tokenMint).catch(() => undefined);
 
     await addActivePosition(
       {
         id: randomUUID(),
-        tokenSymbol: buy.tokenMint.slice(0, 6),
+        tokenSymbol: tokenMetadata?.symbol || buy.tokenMint.slice(0, 6),
         tokenMint: buy.tokenMint,
+        tokenImage: tokenMetadata?.image,
         sourceTrader: buy.trader,
         buyPlatform: buy.platform,
         buyTx: result.signature,

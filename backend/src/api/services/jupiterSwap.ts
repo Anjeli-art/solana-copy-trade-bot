@@ -2,7 +2,7 @@ import path from "path";
 import dotenv from "dotenv";
 import { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { SPL_MINT_LAYOUT } from "@raydium-io/raydium-sdk";
-import { getAssociatedTokenAddressSync } from "@solana/spl-token";
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { getRaydiumConnection, getTradingWallet } from "./raydiumSwap";
 import { createBotLog } from "./logs";
 import { WSOL_MINT } from "../platforms/platformDetector";
@@ -12,6 +12,16 @@ dotenv.config({
 });
 
 type SwapSide = "buy" | "sell";
+
+export class JupiterRequestError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "JupiterRequestError";
+    this.status = status;
+  }
+}
 
 export type JupiterSwapResult = {
   tokenMint: string;
@@ -29,7 +39,7 @@ export type JupiterQuote = {
 };
 
 const decimalsCache = new Map<string, number>();
-const DEFAULT_SLIPPAGE_BPS = 500;
+const DEFAULT_SLIPPAGE_BPS = 200;
 
 function getJupiterBaseUrl() {
   return (process.env.JUPITER_SWAP_API_URL || "https://lite-api.jup.ag/swap/v1").replace(/\/$/, "");
@@ -56,12 +66,19 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unknown error";
 }
 
+export function isJupiterRateLimitError(error: unknown) {
+  return error instanceof JupiterRequestError && error.status === 429;
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   const payload: any = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(payload?.error || payload?.message || `Jupiter request failed: ${response.status}`);
+    throw new JupiterRequestError(
+      payload?.error || payload?.message || `Jupiter request failed: ${response.status}`,
+      response.status
+    );
   }
 
   return payload as T;
@@ -95,14 +112,26 @@ export function rawToUiAmount(rawAmount: string | undefined, decimals: number) {
 async function getTokenBalance(tokenMint: string) {
   const connection = getRaydiumConnection();
   const wallet = getTradingWallet();
-  const ata = getAssociatedTokenAddressSync(new PublicKey(tokenMint), wallet.publicKey);
+  const mint = new PublicKey(tokenMint);
+  let total = 0;
 
-  try {
-    const balance = await connection.getTokenAccountBalance(ata, "confirmed");
-    return balance.value.uiAmount || 0;
-  } catch {
-    return 0;
+  for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+    try {
+      const accounts = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, { programId }, "confirmed");
+      for (const account of accounts.value) {
+        const info = account.account.data.parsed?.info;
+        if (info?.mint !== mint.toBase58()) {
+          continue;
+        }
+
+        total += Number(info.tokenAmount?.uiAmount || 0);
+      }
+    } catch {
+      continue;
+    }
   }
+
+  return total;
 }
 
 export async function getJupiterQuote(params: {
@@ -110,6 +139,7 @@ export async function getJupiterQuote(params: {
   outputMint: string;
   amount: string;
   slippageBps?: number;
+  logFailure?: boolean;
 }) {
   const url = new URL(`${getJupiterBaseUrl()}/quote`);
   url.searchParams.set("inputMint", params.inputMint);
@@ -124,18 +154,20 @@ export async function getJupiterQuote(params: {
       headers: getJupiterHeaders()
     });
   } catch (error) {
-    createBotLog({
-      level: "error",
-      event: "JUPITER_QUOTE_FAILED",
-      message: getErrorMessage(error),
-      tokenMint: params.outputMint === WSOL_MINT ? params.inputMint : params.outputMint,
-      metadata: {
-        inputMint: params.inputMint,
-        outputMint: params.outputMint,
-        amount: params.amount,
-        slippageBps: params.slippageBps || getSlippageBps()
-      }
-    });
+    if (params.logFailure !== false) {
+      createBotLog({
+        level: "error",
+        event: "JUPITER_QUOTE_FAILED",
+        message: getErrorMessage(error),
+        tokenMint: params.outputMint === WSOL_MINT ? params.inputMint : params.outputMint,
+        metadata: {
+          inputMint: params.inputMint,
+          outputMint: params.outputMint,
+          amount: params.amount,
+          slippageBps: params.slippageBps || getSlippageBps()
+        }
+      });
+    }
     throw error;
   }
 }
@@ -257,7 +289,8 @@ export async function getJupiterTokenPriceUsd(tokenMint: string, tokenAmount: nu
   const quote = await getJupiterQuote({
     inputMint: tokenMint,
     outputMint: WSOL_MINT,
-    amount: toRawAmount(tokenAmount, tokenDecimals)
+    amount: toRawAmount(tokenAmount, tokenDecimals),
+    logFailure: false
   });
   const outputSol = rawToUiAmount(quote.outAmount, 9);
 

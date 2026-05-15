@@ -1,6 +1,6 @@
 import path from "path";
 import dotenv from "dotenv";
-import { executeJupiterSell, getJupiterTokenPriceUsd } from "../services/jupiterSwap";
+import { executeJupiterSell, getJupiterTokenPriceUsd, isJupiterRateLimitError } from "../services/jupiterSwap";
 import { createBotLog } from "../services/logs";
 import { getPositionCloseSignal } from "../services/positionRules";
 import { refreshWalletBalance } from "../services/walletBalance";
@@ -16,10 +16,17 @@ dotenv.config({
 });
 
 const DEFAULT_POLL_INTERVAL_MS = 5000;
+const DEFAULT_JUPITER_RATE_LIMIT_COOLDOWN_MS = 60000;
+const jupiterPriceBackoffUntilByToken = new Map<string, number>();
 
 function getPollIntervalMs() {
   const value = Number(process.env.PROFIT_WATCHER_POLL_MS);
   return Number.isFinite(value) && value >= 1000 ? value : DEFAULT_POLL_INTERVAL_MS;
+}
+
+function getJupiterRateLimitCooldownMs() {
+  const value = Number(process.env.JUPITER_RATE_LIMIT_COOLDOWN_MS);
+  return Number.isFinite(value) && value >= 10000 ? value : DEFAULT_JUPITER_RATE_LIMIT_COOLDOWN_MS;
 }
 
 function sleep(ms: number) {
@@ -80,10 +87,43 @@ async function inspectPosition(
     return;
   }
 
-  const currentPriceUsd = await getJupiterTokenPriceUsd(position.tokenMint, position.tokenAmount, solPriceUsd);
+  const backoffUntil = jupiterPriceBackoffUntilByToken.get(position.tokenMint) || 0;
+  if (Date.now() < backoffUntil) {
+    return;
+  }
+
+  let currentPriceUsd: number;
+  try {
+    currentPriceUsd = await getJupiterTokenPriceUsd(position.tokenMint, position.tokenAmount, solPriceUsd);
+  } catch (error) {
+    if (!isJupiterRateLimitError(error)) {
+      throw error;
+    }
+
+    const cooldownMs = getJupiterRateLimitCooldownMs();
+    const retryAt = new Date(Date.now() + cooldownMs).toISOString();
+    jupiterPriceBackoffUntilByToken.set(position.tokenMint, Date.now() + cooldownMs);
+    createBotLog({
+      level: "warn",
+      event: "JUPITER_PRICE_RATE_LIMITED",
+      message: `Jupiter rate limit while checking position price; retry after ${Math.round(cooldownMs / 1000)}s`,
+      wallet: position.sourceTrader,
+      trader: position.sourceTrader,
+      tokenMint: position.tokenMint,
+      positionId: position.id,
+      metadata: {
+        cooldownMs,
+        retryAt
+      }
+    });
+    return;
+  }
+
   if (currentPriceUsd <= 0) {
     return;
   }
+
+  jupiterPriceBackoffUntilByToken.delete(position.tokenMint);
 
   await updatePositionPrice(position, currentPriceUsd);
   const multiplier = currentPriceUsd / position.entryPriceUsd;

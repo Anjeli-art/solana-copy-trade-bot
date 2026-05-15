@@ -20,7 +20,9 @@ export type BotWallet = {
 export type Position = {
   id: string;
   tokenSymbol: string;
+  tokenName?: string;
   tokenMint: string;
+  tokenImage?: string;
   platform: string;
   entryPrice: number;
   currentPrice: number;

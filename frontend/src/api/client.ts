@@ -14,7 +14,9 @@ type ApiSettings = {
 type ApiActivePosition = {
   id: string;
   tokenSymbol: string;
+  tokenName?: string;
   tokenMint: string;
+  tokenImage?: string;
   sourceTrader: string;
   buyPlatform: string;
   buyTx?: string;
@@ -33,6 +35,17 @@ type ApiClosedPosition = Omit<ApiActivePosition, "currentPriceUsd" | "status"> &
   closedAt: string;
   closeReason: "take-profit" | "manual" | "stop-loss" | "timeout";
   sellTx?: string;
+};
+
+export type TokenMetadata = {
+  mint: string;
+  name?: string;
+  symbol?: string;
+  image?: string;
+  decimals?: number;
+  isToken2022: boolean;
+  source: "helius";
+  fetchedAt: string;
 };
 
 export type ApiState = {
@@ -79,7 +92,9 @@ export function mapActivePosition(position: ApiActivePosition): Position {
   return {
     id: position.id,
     tokenSymbol: position.tokenSymbol,
+    tokenName: position.tokenName,
     tokenMint: position.tokenMint,
+    tokenImage: position.tokenImage,
     platform: position.buyPlatform,
     entryPrice: position.entryPriceUsd,
     currentPrice: position.currentPriceUsd,
@@ -95,7 +110,9 @@ export function mapClosedPosition(position: ApiClosedPosition): ClosedPosition {
   return {
     id: position.id,
     tokenSymbol: position.tokenSymbol,
+    tokenName: position.tokenName,
     tokenMint: position.tokenMint,
+    tokenImage: position.tokenImage,
     platform: position.buyPlatform,
     entryPrice: position.entryPriceUsd,
     currentPrice: position.exitPriceUsd,
@@ -155,6 +172,10 @@ export function getLogs(limit = 200) {
 
 export function getTraderAnalytics() {
   return request<TraderAnalytics[]>("/api/analytics/traders");
+}
+
+export function getTokenMetadata(mint: string) {
+  return request<TokenMetadata>(`/api/tokens/${encodeURIComponent(mint)}/metadata`);
 }
 
 export function deleteLog(id: string) {

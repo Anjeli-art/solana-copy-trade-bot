@@ -100,3 +100,37 @@ test("targeted state writes do not replace unrelated tables", async () => {
   assert.ok(state.trackedTraders.some((trader) => trader.address === "7XSuw2JPSn7zQbpSWcRnhFjjz6jA24XkZYYjMej8wD6E"));
   assert.ok(state.activePositions.some((position) => position.id === "pos-2"));
 });
+
+test("adding an active position with a wallet snapshot preserves realized pnl", async () => {
+  const { addActivePosition, readState } = await import("../state/store");
+  const current = await readState();
+
+  await addActivePosition(
+    {
+      id: "pos-wallet-snapshot",
+      tokenSymbol: "TOKEN3",
+      tokenMint: "TokenMint3333333333333333333333333333333333",
+      sourceTrader: "J485YzQjuJPLYoFEYjrjxd7NAoLHTiyUU63JwK7kLxRr",
+      buyPlatform: "PumpSwap",
+      buyTx: "buy-tx-3",
+      entryPriceUsd: 0.03,
+      currentPriceUsd: 0.03,
+      amountUsd: 5,
+      solSpent: 0.05,
+      tokenAmount: 166.67,
+      openedAt: "2026-05-14T00:04:00.000Z",
+      status: "open"
+    },
+    {
+      ...current.wallet,
+      solBalance: 1.23,
+      solPriceUsd: 100,
+      realizedPnlTodayUsd: 12.34,
+      lastUpdated: "2026-05-14T00:04:01.000Z"
+    }
+  );
+
+  const state = await readState();
+  assert.equal(state.wallet.realizedPnlTodayUsd, 12.34);
+  assert.ok(state.activePositions.some((position) => position.id === "pos-wallet-snapshot"));
+});

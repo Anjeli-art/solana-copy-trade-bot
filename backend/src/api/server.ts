@@ -6,6 +6,7 @@ import { handleLogs } from "./routes/logs";
 import { handleRaydium } from "./routes/raydium";
 import { handleSwap } from "./routes/swap";
 import { handleSettings } from "./routes/settings";
+import { handleTokens } from "./routes/tokens";
 import { handleTraders } from "./routes/traders";
 import { handleTrading } from "./routes/trading";
 import { handleWallet } from "./routes/wallet";
@@ -94,6 +95,11 @@ const server = http.createServer(async (request, response) => {
 
     if (parts[0] === "api" && parts[1] === "swap") {
       await handleSwap(request, response, parts[2]);
+      return;
+    }
+
+    if (parts[0] === "api" && parts[1] === "tokens") {
+      await handleTokens(request, response, parts[2], parts[3]);
       return;
     }
 
