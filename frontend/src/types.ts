@@ -26,6 +26,7 @@ export type Position = {
   platform: string;
   entryPrice: number;
   currentPrice: number;
+  priceUpdatedAt?: string;
   amountUsd: number;
   solSpent?: number;
   tokenAmount: number;

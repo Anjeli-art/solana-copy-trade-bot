@@ -24,6 +24,24 @@ function CopyMintButton({ copied, onCopy }: { copied: boolean; onCopy: () => voi
   );
 }
 
+function formatPriceUpdatedAt(value?: string) {
+  if (!value) {
+    return "not updated";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "not updated";
+  }
+
+  return date.toLocaleString([], {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
 export function PositionRow({ position, onSell }: PositionRowProps) {
   const [copiedMint, setCopiedMint] = useState(false);
   const { pnlPercent, pnlUsd } = getPnl(position);
@@ -53,7 +71,9 @@ export function PositionRow({ position, onSell }: PositionRowProps) {
         <strong>{formatUsd(position.entryPrice)}</strong>
       </div>
       <div className="position-cell">
-        <span>Current</span>
+        <span title={position.priceUpdatedAt ? `Updated ${new Date(position.priceUpdatedAt).toLocaleString()}` : undefined}>
+          Current · {formatPriceUpdatedAt(position.priceUpdatedAt)}
+        </span>
         <strong>{formatUsd(position.currentPrice)}</strong>
       </div>
       <div className={`position-pnl ${pnlPercent >= 0 ? "positive" : "negative"}`}>

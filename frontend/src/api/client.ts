@@ -31,6 +31,7 @@ type ApiActivePosition = {
   buyTx?: string;
   entryPriceUsd: number;
   currentPriceUsd: number;
+  currentPriceUpdatedAt?: string;
   amountUsd: number;
   solSpent?: number;
   tokenAmount: number;
@@ -109,6 +110,7 @@ export function mapActivePosition(position: ApiActivePosition): Position {
     platform: position.buyPlatform,
     entryPrice: position.entryPriceUsd,
     currentPrice: position.currentPriceUsd,
+    priceUpdatedAt: position.currentPriceUpdatedAt,
     amountUsd: position.amountUsd,
     solSpent: position.solSpent,
     tokenAmount: position.tokenAmount,

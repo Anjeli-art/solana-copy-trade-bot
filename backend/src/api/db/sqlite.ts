@@ -39,6 +39,7 @@ db.exec(`
     buy_tx TEXT,
     entry_price_usd REAL NOT NULL,
     current_price_usd REAL NOT NULL,
+    current_price_updated_at TEXT,
     amount_usd REAL NOT NULL,
     sol_spent REAL,
     token_amount REAL NOT NULL,
@@ -130,6 +131,16 @@ if (!settingsColumns.some((column) => column.name === "stop_loss_multiplier")) {
 }
 if (!settingsColumns.some((column) => column.name === "position_timeout_minutes")) {
   db.exec("ALTER TABLE bot_settings ADD COLUMN position_timeout_minutes REAL NOT NULL DEFAULT 120");
+}
+
+const activePositionColumns = db.prepare("PRAGMA table_info(active_positions)").all() as Array<{ name: string }>;
+if (!activePositionColumns.some((column) => column.name === "current_price_updated_at")) {
+  db.exec(`
+    ALTER TABLE active_positions ADD COLUMN current_price_updated_at TEXT;
+    UPDATE active_positions
+    SET current_price_updated_at = COALESCE(updated_at, opened_at)
+    WHERE current_price_updated_at IS NULL;
+  `);
 }
 
 const logColumns = db.prepare("PRAGMA table_info(bot_logs)").all() as Array<{ name: string }>;

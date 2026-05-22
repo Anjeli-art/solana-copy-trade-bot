@@ -15,6 +15,7 @@ import { refreshWalletBalance } from "../services/walletBalance";
 import {
   addActivePosition,
   closeActivePosition as closeActivePositionInStore,
+  patchActivePosition,
   readState
 } from "../state/store";
 import { isPositiveNumber, isSolanaAddress } from "../validation";
@@ -242,6 +243,9 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
 
     const wallet = await refreshWalletBalance(state.wallet);
     const exitPriceUsd = await getJupiterTokenPriceUsd(position.tokenMint, position.tokenAmount, wallet.solPriceUsd);
+    if (exitPriceUsd > 0) {
+      await patchActivePosition(position.id, { currentPriceUsd: exitPriceUsd });
+    }
     const result = await executeJupiterSell(position.tokenMint, position.tokenAmount);
     const pnlUsd = getPnlUsd(position.amountUsd, position.entryPriceUsd, exitPriceUsd || position.currentPriceUsd);
     const nextState = await closeActivePositionInStore(

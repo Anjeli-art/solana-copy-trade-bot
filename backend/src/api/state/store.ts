@@ -37,6 +37,7 @@ type DbActivePosition = {
   buy_tx: string | null;
   entry_price_usd: number;
   current_price_usd: number;
+  current_price_updated_at: string | null;
   amount_usd: number;
   sol_spent: number | null;
   token_amount: number;
@@ -162,6 +163,7 @@ function toActivePosition(row: DbActivePosition): ActivePosition {
     buyTx: row.buy_tx || undefined,
     entryPriceUsd: row.entry_price_usd,
     currentPriceUsd: row.current_price_usd,
+    currentPriceUpdatedAt: row.current_price_updated_at || row.opened_at,
     amountUsd: row.amount_usd,
     solSpent: row.sol_spent ?? undefined,
     tokenAmount: row.token_amount,
@@ -576,9 +578,10 @@ function insertActivePosition(position: ActivePosition, savedAt: string) {
     `
       INSERT INTO active_positions (
         id, token_symbol, token_mint, source_trader, buy_platform, buy_tx, entry_price_usd,
-        current_price_usd, amount_usd, sol_spent, token_amount, opened_at, status, created_at, updated_at
+        current_price_usd, current_price_updated_at, amount_usd, sol_spent, token_amount, opened_at, status,
+        created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         token_symbol = excluded.token_symbol,
         token_mint = excluded.token_mint,
@@ -587,6 +590,7 @@ function insertActivePosition(position: ActivePosition, savedAt: string) {
         buy_tx = excluded.buy_tx,
         entry_price_usd = excluded.entry_price_usd,
         current_price_usd = excluded.current_price_usd,
+        current_price_updated_at = excluded.current_price_updated_at,
         amount_usd = excluded.amount_usd,
         sol_spent = excluded.sol_spent,
         token_amount = excluded.token_amount,
@@ -603,6 +607,7 @@ function insertActivePosition(position: ActivePosition, savedAt: string) {
     position.buyTx || null,
     position.entryPriceUsd,
     position.currentPriceUsd,
+    position.currentPriceUpdatedAt || savedAt,
     position.amountUsd,
     position.solSpent ?? null,
     position.tokenAmount,
@@ -705,17 +710,21 @@ export async function patchActivePosition(
     return readState();
   }
 
+  const savedAt = now();
+  const hasPricePatch = patch.currentPriceUsd !== undefined;
+
   db.prepare(
     `
       UPDATE active_positions
-      SET current_price_usd = ?, status = ?, buy_tx = ?, updated_at = ?
+      SET current_price_usd = ?, current_price_updated_at = ?, status = ?, buy_tx = ?, updated_at = ?
       WHERE id = ?
     `
   ).run(
     patch.currentPriceUsd ?? current.current_price_usd,
+    hasPricePatch ? savedAt : current.current_price_updated_at || savedAt,
     patch.status ?? current.status,
     patch.buyTx !== undefined ? patch.buyTx || null : current.buy_tx,
-    now(),
+    savedAt,
     id
   );
 

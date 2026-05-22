@@ -25,6 +25,7 @@ export type ActivePosition = {
   buyTx?: string;
   entryPriceUsd: number;
   currentPriceUsd: number;
+  currentPriceUpdatedAt?: string;
   amountUsd: number;
   solSpent?: number;
   tokenAmount: number;
