@@ -1,4 +1,4 @@
-import type { BotLog, BotWallet, ClosedPosition, Position, Trader, TraderAnalytics } from "../types";
+import type { BotLog, BotWallet, ClosedPosition, ManualTokenAnalytics, Position, Trader, TraderAnalytics } from "../types";
 
 type ApiResponse<T> = {
   data: T;
@@ -58,6 +58,8 @@ export type ApiState = {
 
 export type TradingStatus = {
   enabled: boolean;
+  copyEnabled: boolean;
+  profitEnabled: boolean;
   startedAt?: string;
   stoppedAt?: string;
   lastError?: string;
@@ -162,6 +164,23 @@ export async function closeActivePosition(id: string) {
   };
 }
 
+export async function repeatBuyToken(tokenMint: string, amountSol?: number) {
+  const result = await request<{
+    activePositions: ApiActivePosition[];
+    closedPositions: ApiClosedPosition[];
+    wallet: BotWallet;
+  }>("/api/swap/repeat-buy", {
+    method: "POST",
+    body: JSON.stringify({ tokenMint, amountSol })
+  });
+
+  return {
+    activePositions: result.activePositions.map(mapActivePosition),
+    closedPositions: result.closedPositions.map(mapClosedPosition),
+    wallet: result.wallet
+  };
+}
+
 export function refreshWallet() {
   return request<BotWallet>("/api/wallet");
 }
@@ -172,6 +191,10 @@ export function getLogs(limit = 200) {
 
 export function getTraderAnalytics() {
   return request<TraderAnalytics[]>("/api/analytics/traders");
+}
+
+export function getManualTokenAnalytics() {
+  return request<ManualTokenAnalytics[]>("/api/analytics/manual-tokens");
 }
 
 export function getTokenMetadata(mint: string) {
@@ -188,14 +211,26 @@ export function getTradingStatus() {
   return request<TradingStatus>("/api/trading");
 }
 
-export function startTrading() {
-  return request<TradingStatus>("/api/trading/start", {
+export function startCopyTrading() {
+  return request<TradingStatus>("/api/trading/start-copy", {
     method: "POST"
   });
 }
 
-export function stopTrading() {
-  return request<TradingStatus>("/api/trading/stop", {
+export function stopCopyTrading() {
+  return request<TradingStatus>("/api/trading/stop-copy", {
+    method: "POST"
+  });
+}
+
+export function startProfitWatcher() {
+  return request<TradingStatus>("/api/trading/start-profit", {
+    method: "POST"
+  });
+}
+
+export function stopProfitWatcher() {
+  return request<TradingStatus>("/api/trading/stop-profit", {
     method: "POST"
   });
 }

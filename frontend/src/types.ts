@@ -65,6 +65,36 @@ export type TraderAnalytics = {
   closedTradeCount: number;
   totalAmountUsd: number;
   totalSolSpent: number;
+  realizedPnlUsd: number;
+  unrealizedPnlUsd: number;
+  totalPnlUsd: number;
+  totalPnlPercent: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+  averagePnlUsd: number;
+  firstTradeAt: string;
+  lastTradeAt: string;
+};
+
+export type ManualTokenAnalytics = {
+  tokenMint: string;
+  tokenSymbol: string;
+  tokenName?: string;
+  tokenImage?: string;
+  tradeCount: number;
+  activeTradeCount: number;
+  closedTradeCount: number;
+  totalAmountUsd: number;
+  totalSolSpent: number;
+  realizedPnlUsd: number;
+  unrealizedPnlUsd: number;
+  totalPnlUsd: number;
+  totalPnlPercent: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+  averagePnlUsd: number;
   firstTradeAt: string;
   lastTradeAt: string;
 };

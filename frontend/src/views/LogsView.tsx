@@ -12,8 +12,13 @@ type LogsViewProps = {
   onRefresh: () => void;
 };
 
+type LogStatusFilter = "all" | BotLog["level"];
+
 function toDateInputValue(date: Date) {
-  return date.toISOString().slice(0, 10);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function getLogTimestamp(dateValue: string, timeValue: string, endOfDay = false) {
@@ -40,21 +45,23 @@ function logDetailRows(log: BotLog) {
 export function LogsView({ logs, isRefreshing, onDeleteLog, onRefresh }: LogsViewProps) {
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
+  const [fromDate, setFromDate] = useState(() => toDateInputValue(new Date()));
+  const [toDate, setToDate] = useState(() => toDateInputValue(new Date()));
   const [fromTime, setFromTime] = useState("");
   const [toTime, setToTime] = useState("");
+  const [statusFilter, setStatusFilter] = useState<LogStatusFilter>("all");
   const filteredLogs = useMemo(() => {
     const from = getLogTimestamp(fromDate, fromTime);
     const to = getLogTimestamp(toDate, toTime, true);
 
     return logs.filter((log) => {
+      if (statusFilter !== "all" && log.level !== statusFilter) return false;
       const createdAt = new Date(log.createdAt).getTime();
       if (from !== undefined && createdAt < from) return false;
       if (to !== undefined && createdAt > to) return false;
       return true;
     });
-  }, [fromDate, fromTime, logs, toDate, toTime]);
+  }, [fromDate, fromTime, logs, statusFilter, toDate, toTime]);
 
   async function copyLogValue(fieldId: string, value?: string) {
     if (!value) {
@@ -78,6 +85,15 @@ export function LogsView({ logs, isRefreshing, onDeleteLog, onRefresh }: LogsVie
           <TimeInput label="From time" value={fromTime} onChange={setFromTime} />
           <CalendarInput label="To date" value={toDate} onChange={setToDate} />
           <TimeInput label="To time" value={toTime} onChange={setToTime} />
+          <label className="log-status-filter">
+            <span>Status</span>
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as LogStatusFilter)}>
+              <option value="all">All</option>
+              <option value="info">Info</option>
+              <option value="warn">Warn</option>
+              <option value="error">Error</option>
+            </select>
+          </label>
           <button
             className="refresh-button"
             type="button"

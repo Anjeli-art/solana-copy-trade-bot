@@ -3,9 +3,14 @@ import { randomUUID } from "crypto";
 import { readJsonBody } from "../http/request";
 import { sendError, sendJson } from "../http/response";
 import { findRaydiumPoolId } from "../services/raydiumSwap";
-import { executeJupiterBuy, executeJupiterSell, getJupiterTokenPriceUsd } from "../services/jupiterSwap";
+import {
+  executeJupiterBuy,
+  executeJupiterSell,
+  getJupiterTokenPriceUsd,
+  isJupiterRateLimitError
+} from "../services/jupiterSwap";
 import { createBotLog } from "../services/logs";
-import { logTokenSafetyBeforeBuy } from "../services/tokenSafety";
+import { getTokenMetadata } from "../services/tokenMetadata";
 import { refreshWalletBalance } from "../services/walletBalance";
 import {
   addActivePosition,
@@ -24,12 +29,21 @@ type RaydiumSellBody = {
   positionId?: string;
 };
 
+type RepeatBuyBody = {
+  tokenMint?: string;
+  amountSol?: number;
+};
+
 function getPnlUsd(amountUsd: number, entryPriceUsd: number, exitPriceUsd: number) {
   if (entryPriceUsd <= 0) {
     return 0;
   }
 
   return amountUsd * (exitPriceUsd / entryPriceUsd) - amountUsd;
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Unknown error";
 }
 
 export async function handleRaydium(request: IncomingMessage, response: ServerResponse, action?: string) {
@@ -62,14 +76,23 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
       return;
     }
 
-    await logTokenSafetyBeforeBuy({
-      tokenMint: body.tokenMint!,
-      amountSol,
-      trader: body.sourceTrader || "manual",
-      source: "manual"
-    });
+    let result;
+    try {
+      result = await executeJupiterBuy(body.tokenMint, amountSol);
+    } catch (error) {
+      if (isJupiterRateLimitError(error)) {
+        sendError(
+          response,
+          429,
+          "JUPITER_RATE_LIMITED",
+          "Jupiter rate limit while buying token; wait a bit and try again"
+        );
+        return;
+      }
 
-    const result = await executeJupiterBuy(body.tokenMint, amountSol);
+      sendError(response, 502, "JUPITER_BUY_FAILED", getErrorMessage(error));
+      return;
+    }
     const tokenAmount = result.tokenAmountDelta || 0;
     const amountUsd = amountSol * state.wallet.solPriceUsd;
     const entryPriceUsd = tokenAmount > 0 && amountUsd > 0 ? amountUsd / tokenAmount : 0;
@@ -89,10 +112,119 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
       status: "open"
     });
 
+    createBotLog({
+      event: "MANUAL_BUY_EXECUTED",
+      message: `Manual buy ${body.tokenMint} through Jupiter for ${amountSol} SOL`,
+      wallet: body.sourceTrader || "manual",
+      trader: body.sourceTrader || "manual",
+      tokenMint: body.tokenMint,
+      signature: result.signature,
+      metadata: {
+        amountSol,
+        tokenAmount,
+        entryPriceUsd,
+        executionRoute: "Jupiter"
+      }
+    });
+
     sendJson(response, 200, {
       data: {
         result,
         activePositions: nextState.activePositions
+      }
+    });
+    return;
+  }
+
+  if (request.method === "POST" && action === "repeat-buy") {
+    const body = await readJsonBody<RepeatBuyBody>(request);
+
+    if (!isSolanaAddress(body.tokenMint)) {
+      sendError(response, 400, "INVALID_TOKEN_MINT", "tokenMint must be a valid Solana mint address");
+      return;
+    }
+
+    const state = await readState();
+    const knownPosition = [...state.activePositions, ...state.closedPositions].find(
+      (position) => position.tokenMint === body.tokenMint
+    );
+
+    if (!knownPosition) {
+      sendError(response, 404, "TOKEN_NOT_PREVIOUSLY_TRADED", "Token was not previously traded by this bot");
+      return;
+    }
+
+    const amountSol = body.amountSol ?? state.settings.buyAmountSol;
+    if (!isPositiveNumber(amountSol)) {
+      sendError(response, 400, "INVALID_BUY_AMOUNT", "amountSol must be a positive number");
+      return;
+    }
+
+    const wallet = await refreshWalletBalance(state.wallet);
+
+    let result;
+    try {
+      result = await executeJupiterBuy(body.tokenMint, amountSol);
+    } catch (error) {
+      if (isJupiterRateLimitError(error)) {
+        sendError(
+          response,
+          429,
+          "JUPITER_RATE_LIMITED",
+          "Jupiter rate limit while buying token; wait a bit and try again"
+        );
+        return;
+      }
+
+      sendError(response, 502, "JUPITER_BUY_FAILED", getErrorMessage(error));
+      return;
+    }
+    const tokenAmount = result.tokenAmountDelta || 0;
+    const amountUsd = amountSol * wallet.solPriceUsd;
+    const entryPriceUsd = tokenAmount > 0 && amountUsd > 0 ? amountUsd / tokenAmount : 0;
+    const tokenMetadata = await getTokenMetadata(body.tokenMint).catch(() => undefined);
+    const nextState = await addActivePosition(
+      {
+        id: randomUUID(),
+        tokenSymbol: tokenMetadata?.symbol || knownPosition.tokenSymbol,
+        tokenName: tokenMetadata?.name || knownPosition.tokenName,
+        tokenMint: body.tokenMint,
+        tokenImage: tokenMetadata?.image || knownPosition.tokenImage,
+        sourceTrader: "manual-repeat",
+        buyPlatform: "Jupiter",
+        buyTx: result.signature,
+        entryPriceUsd,
+        currentPriceUsd: entryPriceUsd,
+        amountUsd,
+        solSpent: amountSol,
+        tokenAmount,
+        openedAt: new Date().toISOString(),
+        status: "open"
+      },
+      wallet
+    );
+
+    createBotLog({
+      event: "MANUAL_REPEAT_BUY_EXECUTED",
+      message: `Manual repeat buy ${body.tokenMint} through Jupiter for ${amountSol} SOL`,
+      wallet: "manual-repeat",
+      trader: "manual-repeat",
+      tokenMint: body.tokenMint,
+      signature: result.signature,
+      metadata: {
+        amountSol,
+        tokenAmount,
+        entryPriceUsd,
+        executionRoute: "Jupiter"
+      }
+    });
+
+    sendJson(response, 200, {
+      data: {
+        result,
+        activePositions: nextState.activePositions,
+        closedPositions: nextState.closedPositions,
+        wallet: nextState.wallet
       }
     });
     return;

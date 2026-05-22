@@ -7,7 +7,8 @@ import { refreshWalletBalance } from "../services/walletBalance";
 import {
   closeActivePosition as closeActivePositionInStore,
   patchActivePosition,
-  readState
+  readState,
+  recoverStaleSellingPositions
 } from "../state/store";
 import type { ActivePosition } from "../types";
 
@@ -17,6 +18,7 @@ dotenv.config({
 
 const DEFAULT_POLL_INTERVAL_MS = 5000;
 const DEFAULT_JUPITER_RATE_LIMIT_COOLDOWN_MS = 60000;
+const DEFAULT_SELLING_RECOVERY_MS = 5 * 60 * 1000;
 const jupiterPriceBackoffUntilByToken = new Map<string, number>();
 
 function getPollIntervalMs() {
@@ -27,6 +29,11 @@ function getPollIntervalMs() {
 function getJupiterRateLimitCooldownMs() {
   const value = Number(process.env.JUPITER_RATE_LIMIT_COOLDOWN_MS);
   return Number.isFinite(value) && value >= 10000 ? value : DEFAULT_JUPITER_RATE_LIMIT_COOLDOWN_MS;
+}
+
+function getSellingRecoveryMs() {
+  const value = Number(process.env.PROFIT_WATCHER_SELLING_RECOVERY_MS);
+  return Number.isFinite(value) && value >= 60000 ? value : DEFAULT_SELLING_RECOVERY_MS;
 }
 
 function sleep(ms: number) {
@@ -183,7 +190,34 @@ async function inspectPosition(
 
   await patchActivePosition(position.id, { status: "selling", currentPriceUsd });
 
-  const result = await executeJupiterSell(position.tokenMint, position.tokenAmount);
+  let result: Awaited<ReturnType<typeof executeJupiterSell>>;
+  try {
+    result = await executeJupiterSell(position.tokenMint, position.tokenAmount);
+  } catch (error) {
+    await patchActivePosition(position.id, { status: "open", currentPriceUsd });
+    createBotLog({
+      level: "error",
+      event: "AUTO_SELL_FAILED",
+      message: error instanceof Error ? error.message : "Unknown auto sell error",
+      wallet: position.sourceTrader,
+      trader: position.sourceTrader,
+      tokenMint: position.tokenMint,
+      positionId: position.id,
+      metadata: {
+        closeReason,
+        multiplier,
+        targetMultiplier,
+        stopLossMultiplier,
+        positionTimeoutMinutes,
+        positionAgeMs,
+        exitPriceUsd: currentPriceUsd,
+        sourcePlatform: position.buyPlatform,
+        executionRoute: "Jupiter"
+      }
+    });
+    throw error;
+  }
+
   await closePositionAfterSell(
     { ...position, currentPriceUsd, status: "selling" },
     currentPriceUsd,
@@ -232,12 +266,15 @@ async function inspectPosition(
 
 export async function startProfitWatcherWorker() {
   const pollIntervalMs = getPollIntervalMs();
+  const sellingRecoveryMs = getSellingRecoveryMs();
 
   console.log(`Profit watcher started. Poll interval: ${pollIntervalMs}ms`);
+  console.log(`Stale selling recovery: ${sellingRecoveryMs}ms`);
   console.log("Real multi-platform sell execution through Jupiter: enabled");
 
   while (true) {
     try {
+      await recoverStaleSellingPositions(sellingRecoveryMs);
       const state = await readState();
       const wallet = await refreshWalletBalance(state.wallet);
       const targetMultiplier = state.settings.profitTargetMultiplier;

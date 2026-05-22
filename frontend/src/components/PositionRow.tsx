@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { CircleDollarSign } from "lucide-react";
-import { getTokenMetadata } from "../api/client";
+import { Check, Copy } from "lucide-react";
 import type { ClosedPosition, Position } from "../types";
+import { TokenIcon } from "./TokenIcon";
 import { formatNumber, formatUsd, shortAddress } from "../utils/format";
 import { getPnl } from "../utils/positions";
 
@@ -10,72 +10,43 @@ type PositionRowProps = {
   onSell?: (id: string) => void;
 };
 
-const tokenImageCache = new Map<string, string | null>();
-
-function TokenIcon({ mint, symbol, tokenImage }: { mint: string; symbol: string; tokenImage?: string }) {
-  const [image, setImage] = useState(() => tokenImage || tokenImageCache.get(mint));
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setFailed(false);
-
-    if (tokenImage) {
-      tokenImageCache.set(mint, tokenImage);
-      setImage(tokenImage);
-      return;
-    }
-
-    if (tokenImageCache.has(mint)) {
-      setImage(tokenImageCache.get(mint));
-      return;
-    }
-
-    setImage(undefined);
-    getTokenMetadata(mint)
-      .then((metadata) => {
-        const nextImage = metadata.image || null;
-        tokenImageCache.set(mint, nextImage);
-        if (!cancelled) setImage(nextImage);
-      })
-      .catch(() => {
-        tokenImageCache.set(mint, null);
-        if (!cancelled) setImage(null);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [mint, tokenImage]);
-
-  if (image && !failed) {
-    return (
-      <div className="token-icon has-image">
-        <img src={image} alt={symbol} loading="lazy" onError={() => setFailed(true)} />
-      </div>
-    );
-  }
-
+function CopyMintButton({ copied, onCopy }: { copied: boolean; onCopy: () => void }) {
   return (
-    <div className="token-icon">
-      <CircleDollarSign size={18} />
-    </div>
+    <button
+      className="position-copy-button"
+      type="button"
+      aria-label="Copy token mint"
+      title="Copy token mint"
+      onClick={onCopy}
+    >
+      {copied ? <Check size={12} /> : <Copy size={12} />}
+    </button>
   );
 }
 
 export function PositionRow({ position, onSell }: PositionRowProps) {
+  const [copiedMint, setCopiedMint] = useState(false);
   const { pnlPercent, pnlUsd } = getPnl(position);
   const tokenLabel = position.tokenName || position.tokenSymbol;
   const tokenDetails = position.tokenName
     ? `${position.tokenSymbol} • ${shortAddress(position.tokenMint)}`
     : shortAddress(position.tokenMint);
 
+  async function copyMint() {
+    await navigator.clipboard.writeText(position.tokenMint);
+    setCopiedMint(true);
+    window.setTimeout(() => setCopiedMint(false), 1200);
+  }
+
   return (
     <article className="position-row">
       <TokenIcon mint={position.tokenMint} symbol={position.tokenSymbol} tokenImage={position.tokenImage} />
       <div className="position-token">
-        <strong title={tokenLabel}>{tokenLabel}</strong>
-        <span title={position.tokenMint}>{tokenDetails}</span>
+        <div className="position-token-text">
+          <strong title={tokenLabel}>{tokenLabel}</strong>
+          <span title={position.tokenMint}>{tokenDetails}</span>
+        </div>
+        <CopyMintButton copied={copiedMint} onCopy={copyMint} />
       </div>
       <div className="position-cell">
         <span>Entry</span>
@@ -102,6 +73,7 @@ export function PositionRow({ position, onSell }: PositionRowProps) {
 }
 
 export function ClosedPositionRow({ position }: { position: ClosedPosition }) {
+  const [copiedMint, setCopiedMint] = useState(false);
   const { pnlPercent, pnlUsd } = getPnl({
     ...position,
     currentPrice: position.exitPrice
@@ -111,12 +83,21 @@ export function ClosedPositionRow({ position }: { position: ClosedPosition }) {
     ? `${position.tokenSymbol} • ${shortAddress(position.tokenMint)}`
     : shortAddress(position.tokenMint);
 
+  async function copyMint() {
+    await navigator.clipboard.writeText(position.tokenMint);
+    setCopiedMint(true);
+    window.setTimeout(() => setCopiedMint(false), 1200);
+  }
+
   return (
     <article className="position-row closed">
       <TokenIcon mint={position.tokenMint} symbol={position.tokenSymbol} tokenImage={position.tokenImage} />
       <div className="position-token">
-        <strong title={tokenLabel}>{tokenLabel}</strong>
-        <span title={position.tokenMint}>{tokenDetails}</span>
+        <div className="position-token-text">
+          <strong title={tokenLabel}>{tokenLabel}</strong>
+          <span title={position.tokenMint}>{tokenDetails}</span>
+        </div>
+        <CopyMintButton copied={copiedMint} onCopy={copyMint} />
       </div>
       <div className="position-cell">
         <span>Entry</span>

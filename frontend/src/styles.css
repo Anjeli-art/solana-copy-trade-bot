@@ -131,6 +131,14 @@ select {
   background: #9b2c20;
 }
 
+.trading-toggle.sell-toggle {
+  background: #315f72;
+}
+
+.trading-toggle.sell-toggle.running {
+  background: #9b2c20;
+}
+
 .trading-toggle:disabled {
   background: #d9e0da;
   color: #77847d;
@@ -598,10 +606,54 @@ select {
   gap: 4px;
 }
 
+.analytics-mode-section {
+  padding: 14px;
+}
+
+.analytics-mode-tabs {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(96px, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid #d9e0da;
+  border-radius: 8px;
+  background: #eef3ef;
+}
+
+.analytics-mode-tabs button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 12px;
+  background: transparent;
+  color: #4d5a53;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.analytics-mode-tabs button.active {
+  background: #ffffff;
+  color: #17201b;
+  box-shadow: 0 1px 2px rgba(39, 54, 44, 0.08);
+}
+
 .analytics-summary span {
   color: #1f6b4d;
   font-size: 20px;
   font-weight: 850;
+}
+
+.analytics-summary span.positive,
+.analytics-cell.positive strong,
+.analytics-cell.positive span {
+  color: #1d6845;
+}
+
+.analytics-summary span.negative,
+.analytics-cell.negative strong,
+.analytics-cell.negative span {
+  color: #9b2c20;
 }
 
 .analytics-summary strong {
@@ -616,7 +668,14 @@ select {
 
 .analytics-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.4fr) minmax(130px, 0.7fr) minmax(130px, 0.7fr) minmax(110px, 0.55fr) minmax(180px, 0.9fr);
+  grid-template-columns:
+    minmax(210px, 1.25fr)
+    minmax(86px, 0.5fr)
+    minmax(105px, 0.55fr)
+    minmax(95px, 0.5fr)
+    minmax(118px, 0.65fr)
+    minmax(105px, 0.55fr)
+    minmax(155px, 0.8fr);
   align-items: center;
   gap: 12px;
   min-height: 72px;
@@ -713,6 +772,20 @@ select {
 .position-token,
 .position-cell,
 .position-pnl {
+  gap: 4px;
+  min-width: 0;
+}
+
+.position-token {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22px;
+  align-items: center;
+  column-gap: 8px;
+}
+
+.position-cell,
+.position-pnl,
+.position-token-text {
   display: grid;
   gap: 4px;
   min-width: 0;
@@ -726,7 +799,6 @@ select {
   white-space: nowrap;
 }
 
-.position-token span,
 .position-cell span,
 .position-pnl span {
   overflow: hidden;
@@ -734,6 +806,109 @@ select {
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.position-token-text span {
+  overflow: hidden;
+  color: #66746c;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.position-copy-button {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid #d4ded8;
+  border-radius: 7px;
+  padding: 0;
+  background: #ffffff;
+  color: #2e4638;
+  cursor: pointer;
+}
+
+.position-copy-button:hover {
+  border-color: #aebfb4;
+  background: #f6faf7;
+}
+
+.section-head h2 span {
+  margin-left: 8px;
+  color: #66746c;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.compact-more-row {
+  padding: 10px 12px;
+  border: 1px dashed #cfd9d2;
+  border-radius: 8px;
+  color: #66746c;
+  background: #f7faf7;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.repeat-token-list {
+  display: grid;
+  gap: 8px;
+}
+
+.repeat-token-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid #e1e7e2;
+  border-radius: 8px;
+  background: #fbfcfa;
+}
+
+.repeat-token-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.repeat-token-asset {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.repeat-token-main strong,
+.repeat-token-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repeat-token-main span {
+  color: #66746c;
+  font-size: 13px;
+}
+
+.repeat-buy-button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 12px;
+  background: #1f6b4d;
+  color: #ffffff;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.repeat-buy-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .position-pnl.positive strong,
@@ -1131,7 +1306,7 @@ select {
 
 .logs-actions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(132px, 1fr)) 40px;
+  grid-template-columns: repeat(4, minmax(132px, 1fr)) minmax(118px, 0.7fr) 40px;
   align-items: end;
   gap: 10px;
   width: 100%;
@@ -1162,6 +1337,23 @@ select {
   background: #ffffff;
   color: #1d2a22;
   font: inherit;
+}
+
+.log-status-filter select {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid #d9e1dc;
+  border-radius: 8px;
+  padding: 0 34px 0 10px;
+  appearance: none;
+  background:
+    linear-gradient(45deg, transparent 50%, #52715f 50%) calc(100% - 17px) 16px / 6px 6px no-repeat,
+    linear-gradient(135deg, #52715f 50%, transparent 50%) calc(100% - 13px) 16px / 6px 6px no-repeat,
+    #ffffff;
+  color: #1d2a22;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
 }
 
 .log-entry {

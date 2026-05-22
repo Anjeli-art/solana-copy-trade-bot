@@ -722,6 +722,19 @@ export async function patchActivePosition(
   return readState();
 }
 
+export async function recoverStaleSellingPositions(maxSellingAgeMs: number) {
+  const cutoff = new Date(Date.now() - maxSellingAgeMs).toISOString();
+  db.prepare(
+    `
+      UPDATE active_positions
+      SET status = 'open', updated_at = ?
+      WHERE status = 'selling' AND updated_at <= ?
+    `
+  ).run(now(), cutoff);
+
+  return readState();
+}
+
 export async function deleteActivePosition(id: string) {
   db.prepare("DELETE FROM active_positions WHERE id = ?").run(id);
   return readState();

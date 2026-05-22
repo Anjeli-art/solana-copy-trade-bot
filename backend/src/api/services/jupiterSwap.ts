@@ -1,4 +1,5 @@
 import path from "path";
+import fs from "fs/promises";
 import dotenv from "dotenv";
 import { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { SPL_MINT_LAYOUT } from "@raydium-io/raydium-sdk";
@@ -40,6 +41,13 @@ export type JupiterQuote = {
 
 const decimalsCache = new Map<string, number>();
 const DEFAULT_SLIPPAGE_BPS = 200;
+const DEFAULT_REQUEST_RETRIES = 1;
+const DEFAULT_RATE_LIMIT_RETRY_MS = 60000;
+const DEFAULT_REQUEST_INTERVAL_MS = 2500;
+const RATE_LIMIT_LOCK_STALE_MS = 10000;
+const rateLimitDir = path.resolve(__dirname, "../../../data");
+const rateLimitStatePath = path.join(rateLimitDir, "jupiter-rate-limit.json");
+const rateLimitLockPath = path.join(rateLimitDir, "jupiter-rate-limit.lock");
 
 function getJupiterBaseUrl() {
   return (process.env.JUPITER_SWAP_API_URL || "https://lite-api.jup.ag/swap/v1").replace(/\/$/, "");
@@ -66,15 +74,107 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unknown error";
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getJupiterRequestIntervalMs() {
+  const value = Number(process.env.JUPITER_REQUEST_INTERVAL_MS);
+  return Number.isFinite(value) && value >= 500 ? Math.floor(value) : DEFAULT_REQUEST_INTERVAL_MS;
+}
+
+function getJupiterRequestRetries() {
+  const value = Number(process.env.JUPITER_REQUEST_RETRIES);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : DEFAULT_REQUEST_RETRIES;
+}
+
+function getJupiterRateLimitRetryMs(response: Response) {
+  const retryAfter = response.headers.get("retry-after");
+  const retryAfterSeconds = Number(retryAfter);
+  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+    return Math.ceil(retryAfterSeconds * 1000);
+  }
+
+  const value = Number(process.env.JUPITER_RATE_LIMIT_RETRY_MS);
+  return Number.isFinite(value) && value >= 1000 ? Math.floor(value) : DEFAULT_RATE_LIMIT_RETRY_MS;
+}
+
+async function acquireJupiterRateLock() {
+  await fs.mkdir(rateLimitDir, { recursive: true });
+
+  while (true) {
+    try {
+      await fs.mkdir(rateLimitLockPath);
+      return;
+    } catch (error: any) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+
+      const stats = await fs.stat(rateLimitLockPath).catch(() => undefined);
+      if (stats && Date.now() - stats.mtimeMs > RATE_LIMIT_LOCK_STALE_MS) {
+        await fs.rm(rateLimitLockPath, { recursive: true, force: true });
+        continue;
+      }
+
+      await sleep(100);
+    }
+  }
+}
+
+async function releaseJupiterRateLock() {
+  await fs.rm(rateLimitLockPath, { recursive: true, force: true }).catch(() => undefined);
+}
+
+async function waitForJupiterSlot() {
+  const intervalMs = getJupiterRequestIntervalMs();
+
+  await acquireJupiterRateLock();
+  try {
+    const rawState = await fs.readFile(rateLimitStatePath, "utf8").catch(() => "");
+    const state = rawState ? (JSON.parse(rawState) as { nextAt?: number }) : {};
+    const now = Date.now();
+    const nextAt = Number.isFinite(state.nextAt) ? Number(state.nextAt) : now;
+    const waitMs = Math.max(0, nextAt - now);
+    const reservedAt = Math.max(now, nextAt) + intervalMs;
+
+    await fs.writeFile(rateLimitStatePath, JSON.stringify({ nextAt: reservedAt }), "utf8");
+
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+  } finally {
+    await releaseJupiterRateLock();
+  }
+}
+
+async function setJupiterCooldown(ms: number) {
+  await acquireJupiterRateLock();
+  try {
+    const nextAt = Date.now() + ms;
+    await fs.writeFile(rateLimitStatePath, JSON.stringify({ nextAt }), "utf8");
+  } finally {
+    await releaseJupiterRateLock();
+  }
+}
+
 export function isJupiterRateLimitError(error: unknown) {
   return error instanceof JupiterRequestError && error.status === 429;
 }
 
-async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+async function requestJson<T>(url: string, init?: RequestInit, retries = getJupiterRequestRetries()): Promise<T> {
+  await waitForJupiterSlot();
   const response = await fetch(url, init);
   const payload: any = await response.json().catch(() => ({}));
 
   if (!response.ok) {
+    if (response.status === 429 && retries > 0) {
+      const retryMs = getJupiterRateLimitRetryMs(response);
+      await setJupiterCooldown(retryMs);
+      await sleep(retryMs);
+      return requestJson<T>(url, init, retries - 1);
+    }
+
     throw new JupiterRequestError(
       payload?.error || payload?.message || `Jupiter request failed: ${response.status}`,
       response.status

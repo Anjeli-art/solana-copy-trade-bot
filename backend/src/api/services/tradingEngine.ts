@@ -8,7 +8,8 @@ type ManagedProcess = {
 };
 
 type TradingEngineState = {
-  enabled: boolean;
+  copyEnabled: boolean;
+  profitEnabled: boolean;
   startedAt?: string;
   stoppedAt?: string;
   lastError?: string;
@@ -16,7 +17,8 @@ type TradingEngineState = {
 
 const backendRoot = path.resolve(__dirname, "../../..");
 const state: TradingEngineState = {
-  enabled: false
+  copyEnabled: false,
+  profitEnabled: false
 };
 const processes: ManagedProcess[] = [];
 
@@ -32,6 +34,10 @@ function appendLog(name: string, chunk: Buffer) {
 }
 
 function spawnManagedProcess(name: ManagedProcess["name"], script: string) {
+  if (processes.some((item) => item.name === name)) {
+    return;
+  }
+
   const child = spawn("npm", ["run", script], {
     cwd: backendRoot,
     env: process.env
@@ -45,8 +51,14 @@ function spawnManagedProcess(name: ManagedProcess["name"], script: string) {
       processes.splice(index, 1);
     }
 
-    if (state.enabled) {
-      state.enabled = false;
+    const wasEnabled = name === "copy" ? state.copyEnabled : state.profitEnabled;
+    if (name === "copy") {
+      state.copyEnabled = false;
+    } else {
+      state.profitEnabled = false;
+    }
+
+    if (wasEnabled) {
       state.stoppedAt = new Date().toISOString();
       state.lastError = `${name} trading process stopped unexpectedly: code=${code ?? "null"} signal=${signal ?? "null"}`;
       createBotLog({
@@ -64,6 +76,7 @@ function spawnManagedProcess(name: ManagedProcess["name"], script: string) {
 
 export function getTradingStatus() {
   return {
+    enabled: state.copyEnabled || state.profitEnabled,
     ...state,
     processes: processes.map((item) => ({
       name: item.name,
@@ -72,38 +85,72 @@ export function getTradingStatus() {
   };
 }
 
-export function startTrading() {
-  if (state.enabled) {
-    return getTradingStatus();
-  }
-
-  state.enabled = true;
+export function startCopyTrading() {
+  state.copyEnabled = true;
   state.startedAt = new Date().toISOString();
   state.stoppedAt = undefined;
   state.lastError = undefined;
 
   spawnManagedProcess("copy", "worker:copy");
-  spawnManagedProcess("profit", "worker:profit");
   createBotLog({
-    event: "TRADING_STARTED",
-    message: "Trading was started from UI"
+    event: "COPY_TRADING_STARTED",
+    message: "Auto buy was started from UI"
   });
 
   return getTradingStatus();
 }
 
-export function stopTrading() {
-  state.enabled = false;
+export function stopCopyTrading() {
+  state.copyEnabled = false;
   state.stoppedAt = new Date().toISOString();
 
-  for (const item of [...processes]) {
+  for (const item of processes.filter((process) => process.name === "copy")) {
     item.process.kill("SIGTERM");
   }
-  processes.splice(0, processes.length);
   createBotLog({
-    event: "TRADING_STOPPED",
-    message: "Trading was stopped from UI"
+    event: "COPY_TRADING_STOPPED",
+    message: "Auto buy was stopped from UI"
   });
 
   return getTradingStatus();
+}
+
+export function startProfitWatcher() {
+  state.profitEnabled = true;
+  state.startedAt = new Date().toISOString();
+  state.stoppedAt = undefined;
+  state.lastError = undefined;
+
+  spawnManagedProcess("profit", "worker:profit");
+  createBotLog({
+    event: "PROFIT_WATCHER_STARTED",
+    message: "Auto sell was started from UI"
+  });
+
+  return getTradingStatus();
+}
+
+export function stopProfitWatcher() {
+  state.profitEnabled = false;
+  state.stoppedAt = new Date().toISOString();
+
+  for (const item of processes.filter((process) => process.name === "profit")) {
+    item.process.kill("SIGTERM");
+  }
+  createBotLog({
+    event: "PROFIT_WATCHER_STOPPED",
+    message: "Auto sell was stopped from UI"
+  });
+
+  return getTradingStatus();
+}
+
+export function startTrading() {
+  startCopyTrading();
+  return startProfitWatcher();
+}
+
+export function stopTrading() {
+  stopCopyTrading();
+  return stopProfitWatcher();
 }

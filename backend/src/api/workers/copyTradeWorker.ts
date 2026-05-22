@@ -3,7 +3,11 @@ import dotenv from "dotenv";
 import { randomUUID } from "crypto";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { db } from "../db/sqlite";
-import { detectTraderPlatformBuys, type DetectedTraderBuy } from "../platforms/platformDetector";
+import {
+  detectTraderPlatformBuys,
+  detectUnmatchedTraderBuyLikes,
+  type DetectedTraderBuy
+} from "../platforms/platformDetector";
 import { executeJupiterBuy } from "../services/jupiterSwap";
 import { createBotLog } from "../services/logs";
 import { logTokenSafetyBeforeBuy } from "../services/tokenSafety";
@@ -323,6 +327,27 @@ async function processTraderSignatures(
 
     if (!transaction) {
       continue;
+    }
+
+    const unmatchedBuyLikes = detectUnmatchedTraderBuyLikes(transaction, trader, signatureInfo.signature);
+    for (const buyLike of unmatchedBuyLikes) {
+      createBotLog({
+        level: "warn",
+        event: "TRADER_BUY_PLATFORM_UNMATCHED",
+        message: `Tracked trader received ${buyLike.tokenMint}, but platform was not matched`,
+        trader: buyLike.trader,
+        tokenMint: buyLike.tokenMint,
+        signature: buyLike.signature,
+        metadata: {
+          tokenAmount: buyLike.tokenAmount,
+          spentSol: buyLike.spentSol,
+          solChange: buyLike.solChange,
+          wsolChange: buyLike.wsolChange,
+          slot: buyLike.slot,
+          blockTime: buyLike.blockTime,
+          mentionedPrograms: buyLike.mentionedPrograms.slice(0, 40)
+        }
+      });
     }
 
     const buys = detectTraderPlatformBuys(transaction, trader, signatureInfo.signature, wallet.solPriceUsd);

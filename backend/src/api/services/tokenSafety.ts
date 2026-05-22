@@ -307,7 +307,7 @@ export async function logTokenSafetyBeforeBuy(input: {
   amountSol: number;
   trader?: string;
   signature?: string;
-  source?: "copy-trade" | "manual";
+  source?: "copy-trade" | "manual" | "manual-repeat";
 }) {
   try {
     const report = await inspectTokenSafety(input.tokenMint, input.amountSol);

@@ -25,6 +25,19 @@ export type DetectedTraderBuy = {
   matchedPrograms: string[];
 };
 
+export type UnmatchedTraderBuyLike = {
+  trader: string;
+  signature: string;
+  slot: number;
+  blockTime: number | null | undefined;
+  tokenMint: string;
+  tokenAmount: number;
+  solChange: number;
+  wsolChange: number;
+  spentSol: number;
+  mentionedPrograms: string[];
+};
+
 const platformPrograms: PlatformProgram[] = [
   {
     platform: "Raydium",
@@ -121,6 +134,10 @@ function getMentionedPrograms(transaction: any) {
   return mentioned;
 }
 
+function getKnownPlatformProgramIds() {
+  return new Set(platformPrograms.flatMap((platform) => platform.programIds));
+}
+
 function detectPlatform(transaction: any) {
   const mentioned = getMentionedPrograms(transaction);
 
@@ -135,6 +152,23 @@ function detectPlatform(transaction: any) {
   }
 
   return undefined;
+}
+
+function getTraderBuyDeltas(transaction: any, trader: string) {
+  const preBalances = collectTokenBalancesByMint(transaction.meta.preTokenBalances, trader);
+  const postBalances = collectTokenBalancesByMint(transaction.meta.postTokenBalances, trader);
+  const deltas: Array<{ mint: string; delta: number }> = [];
+
+  for (const [mint, postAmount] of postBalances) {
+    const preAmount = preBalances.get(mint) || 0;
+    const delta = postAmount - preAmount;
+
+    if (delta > 0) {
+      deltas.push({ mint, delta });
+    }
+  }
+
+  return deltas;
 }
 
 export function detectTraderPlatformBuys(
@@ -152,8 +186,6 @@ export function detectTraderPlatformBuys(
     return [];
   }
 
-  const preBalances = collectTokenBalancesByMint(transaction.meta.preTokenBalances, trader);
-  const postBalances = collectTokenBalancesByMint(transaction.meta.postTokenBalances, trader);
   const solChange = getSolChangeForTrader(transaction, trader);
   const wsolChange = getWsolChangeForTrader(transaction, trader);
   const spentSol = Math.max(0, -solChange, -wsolChange);
@@ -164,14 +196,7 @@ export function detectTraderPlatformBuys(
 
   const buys: DetectedTraderBuy[] = [];
 
-  for (const [mint, postAmount] of postBalances) {
-    const preAmount = preBalances.get(mint) || 0;
-    const delta = postAmount - preAmount;
-
-    if (delta <= 0) {
-      continue;
-    }
-
+  for (const { mint, delta } of getTraderBuyDeltas(transaction, trader)) {
     buys.push({
       trader,
       signature,
@@ -189,4 +214,40 @@ export function detectTraderPlatformBuys(
   }
 
   return buys;
+}
+
+export function detectUnmatchedTraderBuyLikes(
+  transaction: any,
+  trader: string,
+  signature: string
+): UnmatchedTraderBuyLike[] {
+  if (!transaction.meta || detectPlatform(transaction)) {
+    return [];
+  }
+
+  const solChange = getSolChangeForTrader(transaction, trader);
+  const wsolChange = getWsolChangeForTrader(transaction, trader);
+  const spentSol = Math.max(0, -solChange, -wsolChange);
+
+  if (spentSol <= 0.0005) {
+    return [];
+  }
+
+  const knownPlatformProgramIds = getKnownPlatformProgramIds();
+  const mentionedPrograms = Array.from(getMentionedPrograms(transaction)).filter(
+    (programId) => !knownPlatformProgramIds.has(programId)
+  );
+
+  return getTraderBuyDeltas(transaction, trader).map(({ mint, delta }) => ({
+    trader,
+    signature,
+    slot: transaction.slot,
+    blockTime: transaction.blockTime,
+    tokenMint: mint,
+    tokenAmount: delta,
+    solChange,
+    wsolChange,
+    spentSol,
+    mentionedPrograms
+  }));
 }

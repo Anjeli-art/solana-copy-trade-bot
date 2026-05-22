@@ -1,160 +1,310 @@
 # Solana Copy Trade Bot
 
-Local Solana copy-trading bot with a Node.js backend, SQLite storage, and a React/Vite dashboard.
+Local Solana copy-trading bot with a Node.js backend, SQLite storage, Jupiter execution, Helius/RPC polling, and a React/Vite dashboard.
 
-The bot runs on your machine. It watches configured trader wallets, detects supported token buy transactions, copies the buy from the local trading wallet, tracks the opened position, and sells automatically when one of the configured exit rules is reached.
+The bot runs locally. It watches enabled trader wallets, detects supported buy transactions, can copy those buys from your local wallet, tracks open positions, and can sell positions automatically by profit, stop-loss, or timeout rules.
 
-## What Works Now
+## Current Features
 
-- Local npm workspace monorepo with `backend` and `frontend`.
-- Backend API on `127.0.0.1:3001`.
-- Frontend dashboard on `127.0.0.1:5173`.
-- SQLite persistence for settings, tracked traders, active positions, closed positions, processed signatures, and bot logs.
-- Manual management of tracked trader wallets from the dashboard.
-- Start/stop trading control from the dashboard.
-- RPC polling monitor for tracked trader wallets.
-- Buy detection for supported Solana venues.
-- Automatic copy-buy execution through Jupiter.
-- Automatic position tracking after a copied buy.
-- Automatic sell execution through Jupiter.
-- Manual sell button for open positions.
-- Closed positions history with filtering and export.
-- Bot logs page with polling updates.
-- Wallet balance display from the backend.
-- Configurable buy amount in SOL.
-- Configurable take-profit multiplier.
-- Configurable stop-loss multiplier.
-- Configurable position timeout in minutes.
-- Token safety warnings before buy.
-- Backend tests for core detection, settings, position rules, validation, and token safety helpers.
+- Backend API on `127.0.0.1:3001` by default.
+- React dashboard on `127.0.0.1:5173`.
+- SQLite persistence for settings, wallet snapshot, tracked traders, active positions, closed positions, processed signatures, token metadata cache, and bot logs.
+- Separate UI controls for auto-buy and auto-sell.
+- Copy-trade worker for watching trader wallets through Solana HTTP RPC.
+- Profit watcher for open position price checks and auto-sells.
+- Manual buy by token mint.
+- Manual repeat-buy for tokens that were already traded by the bot.
+- Manual sell for open positions.
+- Token metadata endpoint with Helius DAS `getAsset` support for name, symbol, image, decimals, and Token-2022 flag.
+- Token icons in positions and manual repeat lists when metadata is available.
+- Trading analytics separated from manual token analytics.
+- Bot logs with expandable rows, date/time filters, status filter, copy buttons, and delete action.
+- Debug logs for buy-like transactions where the source platform was not recognized.
+- Jupiter request throttling, retry, and cooldown handling for `429` rate limits.
+- Recovery for stale positions stuck in `selling` after a failed auto-sell.
+- Backend tests for platform detection, state writes, position rules, validation, and token safety helpers.
 
-## Supported Buy Detection
+## Architecture
 
-The backend attempts to detect trader buys on:
+The project is an npm workspace:
 
-- Raydium AMM / CPMM / CLMM
+- `backend`: Node.js/TypeScript API, workers, SQLite store, Jupiter/Helius/RPC integrations.
+- `frontend`: React/Vite dashboard.
+
+Runtime processes:
+
+- API server: serves state, settings, traders, positions, logs, analytics, manual buy/sell, metadata, and trading controls.
+- Copy worker: polls enabled trader wallets and creates copied buy positions.
+- Profit watcher: polls open positions and sells when exit rules trigger.
+
+The API starts workers as child processes when the dashboard buttons are used.
+
+## Trading Controls
+
+The dashboard has two independent controls:
+
+- `Start buy` / `Stop buy`: starts or stops copy-buy monitoring.
+- `Start sell` / `Stop sell`: starts or stops automatic sell monitoring.
+
+Behavior:
+
+- If both are enabled, the bot buys and sells automatically.
+- If only buy is enabled, the bot can open new positions but will not auto-sell.
+- If only sell is enabled, the bot will not open new copy positions but can close existing open positions.
+- If both are disabled, automatic buying and selling are stopped.
+
+Old combined endpoints still exist:
+
+- `POST /api/trading/start`: starts buy and sell.
+- `POST /api/trading/stop`: stops buy and sell.
+
+## Supported Source Detection
+
+The copy worker attempts to detect trader buys from these source platforms:
+
+- Raydium AMM / CPMM / CLMM / route
 - Orca Whirlpool
 - Meteora
 - Pump.fun bonding curve
 - PumpSwap
-- Jupiter routes
 
-Execution currently goes through Jupiter routes. This lets the bot copy buys and sell positions when Jupiter can build a route for the token.
+Detected source platform is stored on the position as `buyPlatform`.
 
-## Trading Flow
+Execution is still done through Jupiter. This means a trader may buy on Pump.fun, Raydium, Meteora, or another supported venue, but the bot's actual copied buy/sell transaction is built through Jupiter when Jupiter can return a route.
 
-1. Add trader wallet addresses in the dashboard.
-2. Set buy amount in SOL.
-3. Set take-profit multiplier.
-4. Set stop-loss multiplier.
-5. Set position timeout.
-6. Click `Start trading`.
-7. The backend polls tracked trader wallets through the configured Solana RPC endpoint.
-8. When a supported trader buy is detected, the backend checks token safety and writes warnings to logs if needed.
-9. The bot buys the same token through Jupiter using the local trading wallet.
-10. The opened token appears as an active position.
-11. The profit watcher checks active positions using Jupiter quotes.
-12. The bot sells automatically on take-profit, stop-loss, or timeout.
-13. The position moves to closed positions.
-14. The frontend shows positions, wallet state, settings, traders, and logs.
+If a transaction looks like a buy because the trader received a token and spent SOL/WSOL, but no known platform program matched, the bot writes:
 
-## Exit Rules
+- `TRADER_BUY_PLATFORM_UNMATCHED`
 
-The bot can close an open position for four reasons:
+That debug log includes the token mint, signature, SOL/WSOL change, token amount, slot, block time, and mentioned programs. Use this to investigate missed Raydium/Meteora/Jupiter-routed trades.
 
-- `take-profit`: current price reaches the configured profit multiplier.
-- `stop-loss`: current price falls to the configured stop-loss multiplier.
-- `timeout`: position stays open longer than the configured timeout.
-- `manual`: user clicks manual sell from the dashboard.
+## Copy-Buy Flow
 
-## Token Safety Warnings
+1. Add trader wallets in the dashboard.
+2. Enable the traders you want to monitor.
+3. Set buy amount in SOL.
+4. Click `Start buy`.
+5. The copy worker polls trader signatures through `MAINNET_ENDPOINT` or `RPC_ENDPOINT`.
+6. For each new signature, it fetches the parsed transaction.
+7. If a supported buy is detected, token safety warnings are logged.
+8. The bot checks that your wallet has enough SOL for buy amount plus fee reserve.
+9. The bot buys through Jupiter.
+10. Token metadata is fetched and cached when possible.
+11. An active position is created.
 
-Before a buy, the backend checks the token and writes warnings to logs. These checks do not block the buy.
+Duplicate copy attempts are prevented through the `processed_signatures` table. If an active position for the same token already exists, the buy is skipped and logged.
 
-Current checks:
+## Sell Flow
+
+1. Click `Start sell`.
+2. The profit watcher reads current settings each cycle.
+3. It checks every open position through Jupiter quote pricing.
+4. It updates `currentPriceUsd` on the position.
+5. It sells through Jupiter when one of the exit rules triggers.
+6. The position is moved from active positions to closed positions.
+
+Exit reasons:
+
+- `take-profit`
+- `stop-loss`
+- `timeout`
+- `manual`
+
+If an auto-sell fails after the position was marked as `selling`, the watcher restores it back to `open` and logs `AUTO_SELL_FAILED`. Stale `selling` positions are also recovered automatically after the configured recovery time.
+
+## Manual Trading
+
+Manual actions use Jupiter execution too:
+
+- `POST /api/raydium/buy`: manual buy by token mint.
+- `POST /api/raydium/repeat-buy`: manual buy for a token that already exists in active or closed positions.
+- `POST /api/raydium/sell-position`: manual sell of an active position.
+
+The route name is still `raydium` for historical reasons, but current buy/sell execution goes through Jupiter.
+
+Manual positions use:
+
+- `sourceTrader = manual` for manual buy.
+- `sourceTrader = manual-repeat` for repeat buy.
+
+Manual analytics are separated from trader copy analytics.
+
+## Analytics
+
+The dashboard analytics page has two sections:
+
+- Trading analytics: copied trader positions only.
+- Manual analytics: manual and manual-repeat token positions.
+
+Both tables show trade count, total bought amount, realized/open PnL, win/loss stats, win rate, and average PnL.
+
+Backend endpoints:
+
+- `GET /api/analytics/traders`
+- `GET /api/analytics/manual-tokens`
+
+## Logs
+
+Logs are stored in SQLite and shown in the dashboard.
+
+Supported UI actions:
+
+- filter by date
+- filter by time range
+- filter by status level
+- expand rows for full details
+- copy trader/token/signature fields
+- delete individual logs
+
+Useful log events include:
+
+- `TRADER_BUY_DETECTED`
+- `TRADER_BUY_PLATFORM_UNMATCHED`
+- `COPY_BUY_EXECUTED`
+- `COPY_BUY_FAILED`
+- `BUY_SKIPPED_POSITION_EXISTS`
+- `BUY_SKIPPED_INSUFFICIENT_SOL`
+- `MANUAL_BUY_EXECUTED`
+- `MANUAL_REPEAT_BUY_EXECUTED`
+- `MANUAL_SELL_EXECUTED`
+- `TOKEN_SAFETY_WARNING`
+- `TOKEN_SAFETY_CHECK_FAILED`
+- `JUPITER_QUOTE_FAILED`
+- `JUPITER_SWAP_FAILED`
+- `JUPITER_PRICE_RATE_LIMITED`
+- `RPC_REQUEST_FAILED`
+- `AUTO_SELL_EXECUTED`
+- `AUTO_SELL_FAILED`
+- `TAKE_PROFIT_REACHED`
+- `STOP_LOSS_REACHED`
+- `POSITION_TIMEOUT_REACHED`
+
+Backend endpoint:
+
+- `GET /api/logs?limit=200`
+- `DELETE /api/logs/:id`
+
+## Token Metadata
+
+Token metadata is fetched through Helius DAS using the configured RPC endpoint.
+
+Endpoint:
+
+- `GET /api/tokens/:mint/metadata`
+
+The backend caches metadata in SQLite for six hours. The dashboard uses this data for token names, symbols, images, and Token-2022 visibility.
+
+## Token Safety
+
+Before copy buys, the backend writes warning logs for risky token traits. These warnings do not block the buy.
+
+Current checks include:
 
 - freeze authority
 - mint authority
 - Token-2022 program
 - Token-2022 transfer fee extension
-- unavailable Jupiter buy route
-- unavailable Jupiter sell route
+- missing Jupiter buy route
+- missing Jupiter sell route
 - high round-trip quote loss
-- possible tax or weak liquidity
+- weak liquidity or possible tax behavior
 - high price impact
 
-Warnings are saved as `TOKEN_SAFETY_WARNING` log events. If the check itself fails, the backend writes `TOKEN_SAFETY_CHECK_FAILED` and continues with the buy attempt.
+## Polling And Rate Limits
 
-## Dashboard
+Current defaults:
 
-The React dashboard includes:
+- Copy worker poll: `COPY_TRADE_POLL_MS`, fallback `FREE_MONITOR_POLL_MS`, default `5000`.
+- Copy signature limit: `COPY_TRADE_SIGNATURE_LIMIT`, fallback `FREE_MONITOR_SIGNATURE_LIMIT`, default `20`.
+- Profit watcher poll: `PROFIT_WATCHER_POLL_MS`, default `5000`.
+- Jupiter price cooldown after rate limit: `JUPITER_RATE_LIMIT_COOLDOWN_MS`, default `60000`.
+- Jupiter request interval: `JUPITER_REQUEST_INTERVAL_MS`.
+- Jupiter request retries: `JUPITER_REQUEST_RETRIES`.
+- Jupiter retry-after fallback: `JUPITER_RATE_LIMIT_RETRY_MS`.
+- Stale selling recovery: `PROFIT_WATCHER_SELLING_RECOVERY_MS`, default `300000`.
 
-- main overview with backend status
-- trading start/stop control
-- wallet balance card
-- copy trading settings
-- tracked traders management
-- open positions
-- closed positions
-- export for closed positions
-- export for tracked traders
-- bot logs
+The project currently uses HTTP RPC polling, not websocket or gRPC streaming, for trader monitoring.
 
-The frontend reads backend state through polling.
+## API Endpoints
 
-## Local Storage
+Common endpoints:
 
-The backend uses SQLite for local persistence.
-
-Stored data includes:
-
-- settings
-- tracked traders
-- active positions
-- closed positions
-- processed trader transaction signatures
-- bot logs
-
-Processed signatures are stored to avoid copying the same trader transaction twice.
-
-## Requirements
-
-- Node.js `24.x`
-- npm
-- Solana HTTP RPC endpoint
-- Local trading wallet private key in base58 format
+- `GET /api/health`
+- `GET /api/state`
+- `GET /api/settings`
+- `PUT /api/settings`
+- `PATCH /api/settings`
+- `GET /api/wallet`
+- `GET /api/trading`
+- `POST /api/trading/start`
+- `POST /api/trading/stop`
+- `POST /api/trading/start-copy`
+- `POST /api/trading/stop-copy`
+- `POST /api/trading/start-profit`
+- `POST /api/trading/stop-profit`
+- `GET /api/traders`
+- `POST /api/traders`
+- `PUT /api/traders/:address`
+- `PATCH /api/traders/:address`
+- `DELETE /api/traders/:address`
+- `GET /api/positions/active`
+- `POST /api/positions/active`
+- `PUT /api/positions/active/:id`
+- `PATCH /api/positions/active/:id`
+- `POST /api/positions/active/:id/close`
+- `DELETE /api/positions/active/:id`
+- `GET /api/positions/closed`
+- `GET /api/raydium/pool?tokenMint=<mint>`
+- `POST /api/raydium/buy`
+- `POST /api/raydium/repeat-buy`
+- `POST /api/raydium/sell-position`
+- `GET /api/logs?limit=200`
+- `DELETE /api/logs/:id`
+- `GET /api/analytics/traders`
+- `GET /api/analytics/manual-tokens`
+- `GET /api/tokens/:mint/metadata`
 
 ## Environment
 
-Create a local env file:
+Create:
 
 ```text
 backend/src/helpers/.env
 ```
 
-Required values:
+Required:
 
 ```env
 PRIVATE_KEY=your_base58_private_key
 MAINNET_ENDPOINT=your_solana_rpc_https_url
 ```
 
-Optional values:
+Optional:
 
 ```env
+API_HOST=127.0.0.1
+API_PORT=3001
+RPC_ENDPOINT=
 JUPITER_SWAP_API_URL=https://lite-api.jup.ag/swap/v1
+JUPITER_PRICE_ENDPOINT=https://lite-api.jup.ag/price/v3
 JUPITER_API_KEY=
 JUPITER_SLIPPAGE_BPS=200
-COPY_TRADE_POLL_MS=5000
+JUPITER_REQUEST_INTERVAL_MS=2500
+JUPITER_REQUEST_RETRIES=1
+JUPITER_RATE_LIMIT_RETRY_MS=60000
+JUPITER_RATE_LIMIT_COOLDOWN_MS=60000
+COPY_TRADE_POLL_MS=1000
 COPY_TRADE_SIGNATURE_LIMIT=20
 COPY_TRADE_INCLUDE_HISTORY=false
+FREE_MONITOR_POLL_MS=
+FREE_MONITOR_SIGNATURE_LIMIT=
+PROFIT_WATCHER_POLL_MS=10000
+PROFIT_WATCHER_SELLING_RECOVERY_MS=300000
 ```
 
 The env file is ignored by git. Never commit private keys or RPC keys.
 
 ## Install
-
-Install dependencies from the repository root:
 
 ```bash
 npm install
@@ -174,49 +324,62 @@ Start frontend:
 npm run frontend
 ```
 
-Or run both together:
+Run API and frontend together:
 
 ```bash
 npm run dev
 ```
 
-Frontend:
+Run workers directly:
 
-```text
-http://127.0.0.1:5173
+```bash
+npm run worker:copy
+npm run worker:profit
 ```
 
-Backend:
+URLs:
 
 ```text
-http://127.0.0.1:3001
+Frontend: http://127.0.0.1:5173
+Backend:  http://127.0.0.1:3001
 ```
 
-## Tests
+## Checks
 
-Run backend tests:
+Backend tests:
 
 ```bash
 npm test
 ```
 
-Run backend typecheck:
+Backend typecheck:
 
 ```bash
 npm run typecheck:api
 ```
 
-Build frontend:
+Frontend build:
 
 ```bash
 npm run build:frontend
 ```
 
+## Requirements
+
+- Node.js `>=24.0.0`
+- npm
+- Solana HTTP RPC endpoint
+- Local trading wallet private key in base58 format
+
+Node 24 is required because the backend uses `node:sqlite`.
+
 ## Current Limitations
 
-- Monitoring currently uses RPC polling, not gRPC streaming.
-- Execution uses Jupiter routes instead of native per-platform swap adapters.
-- Token safety checks are warning-only and do not block trades.
-- Honeypot and tax detection is based on quote behavior, not a guaranteed sell simulation.
-- Slippage is configured through backend env, not from the dashboard yet.
+- Trader monitoring uses HTTP RPC polling, not websocket/gRPC streaming.
+- Swap execution currently uses Jupiter, not native per-platform adapters.
+- Jupiter `429` rate limits can delay buys, price checks, or sells on free/public API tiers.
+- Token safety checks are warning-only.
+- Honeypot/tax checks are inferred from quotes, not guaranteed simulations.
+- Manual buy/sell routes still live under `/api/raydium/*` even though execution is Jupiter.
+- Token metadata depends on Helius DAS availability and cache freshness.
 - Real trading can lose money because of latency, slippage, failed routes, low liquidity, price impact, and token contract risk.

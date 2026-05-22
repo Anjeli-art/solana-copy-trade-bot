@@ -5,18 +5,22 @@ import {
   deleteLog,
   deleteTrackedTrader,
   getLogs,
+  getManualTokenAnalytics,
   getTraderAnalytics,
   getTradingStatus,
   getState,
   refreshWallet,
+  repeatBuyToken,
   saveSettings,
-  startTrading,
-  stopTrading
+  startCopyTrading,
+  startProfitWatcher,
+  stopCopyTrading,
+  stopProfitWatcher
 } from "./api/client";
 import { MetricsGrid } from "./components/MetricsGrid";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
-import type { BotLog, BotWallet, ClosedPosition, Position, Trader, TraderAnalytics, View } from "./types";
+import type { BotLog, BotWallet, ClosedPosition, ManualTokenAnalytics, Position, Trader, TraderAnalytics, View } from "./types";
 import { AnalyticsView } from "./views/AnalyticsView";
 import { DashboardView } from "./views/DashboardView";
 import { LogsView } from "./views/LogsView";
@@ -41,6 +45,7 @@ export function App() {
   const [closedPositions, setClosedPositions] = useState<ClosedPosition[]>([]);
   const [logs, setLogs] = useState<BotLog[]>([]);
   const [analytics, setAnalytics] = useState<TraderAnalytics[]>([]);
+  const [manualTokenAnalytics, setManualTokenAnalytics] = useState<ManualTokenAnalytics[]>([]);
   const [wallet, setWallet] = useState<BotWallet>(EMPTY_WALLET);
   const [fallbackSolPriceUsd, setFallbackSolPriceUsd] = useState(0);
   const [walletAddress, setWalletAddress] = useState("");
@@ -56,13 +61,16 @@ export function App() {
   const [apiError, setApiError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isWalletRefreshing, setIsWalletRefreshing] = useState(false);
-  const [tradingEnabled, setTradingEnabled] = useState(false);
-  const [isTradingUpdating, setIsTradingUpdating] = useState(false);
+  const [copyEnabled, setCopyEnabled] = useState(false);
+  const [profitEnabled, setProfitEnabled] = useState(false);
+  const [updatingTradingMode, setUpdatingTradingMode] = useState<"copy" | "profit" | null>(null);
   const [isLogsRefreshing, setIsLogsRefreshing] = useState(false);
+  const [repeatBuyingMint, setRepeatBuyingMint] = useState<string | null>(null);
 
   const traderCount = useMemo(() => traders.length, [traders]);
   const openPositions = positions.length;
   const solPriceUsd = wallet.solPriceUsd || fallbackSolPriceUsd;
+  const hasActiveAutomation = copyEnabled || profitEnabled;
 
   async function refreshState() {
     try {
@@ -104,7 +112,9 @@ export function App() {
     try {
       setApiError("");
       const nextAnalytics = await getTraderAnalytics();
+      const nextManualTokenAnalytics = await getManualTokenAnalytics();
       setAnalytics(nextAnalytics);
+      setManualTokenAnalytics(nextManualTokenAnalytics);
     } catch (fetchError) {
       setApiError(fetchError instanceof Error ? fetchError.message : "Failed to load analytics");
     }
@@ -120,9 +130,11 @@ export function App() {
     async function refreshTradingStatus() {
       try {
         const status = await getTradingStatus();
-        setTradingEnabled(status.enabled);
+        setCopyEnabled(status.copyEnabled);
+        setProfitEnabled(status.profitEnabled);
       } catch {
-        setTradingEnabled(false);
+        setCopyEnabled(false);
+        setProfitEnabled(false);
       }
     }
 
@@ -130,15 +142,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const tradingStatusTimer = window.setInterval(async () => {
-      try {
-        const status = await getTradingStatus();
-        setTradingEnabled(status.enabled);
-      } catch {
-        setTradingEnabled(false);
-      }
-    }, 15000);
-
     const logsTimer = window.setInterval(() => {
       refreshLogs();
     }, 20000);
@@ -146,14 +149,13 @@ export function App() {
     const stateTimer = window.setInterval(() => {
       refreshState();
       refreshAnalytics();
-    }, tradingEnabled ? 30000 : 60000);
+    }, hasActiveAutomation ? 30000 : 60000);
 
     return () => {
-      window.clearInterval(tradingStatusTimer);
       window.clearInterval(logsTimer);
       window.clearInterval(stateTimer);
     };
-  }, [tradingEnabled]);
+  }, [hasActiveAutomation]);
 
   useEffect(() => {
     if (wallet.solPriceUsd > 0) {
@@ -254,16 +256,31 @@ export function App() {
     }
   }
 
-  async function toggleTrading() {
+  async function toggleCopyTrading() {
     try {
       setApiError("");
-      setIsTradingUpdating(true);
-      const status = tradingEnabled ? await stopTrading() : await startTrading();
-      setTradingEnabled(status.enabled);
+      setUpdatingTradingMode("copy");
+      const status = copyEnabled ? await stopCopyTrading() : await startCopyTrading();
+      setCopyEnabled(status.copyEnabled);
+      setProfitEnabled(status.profitEnabled);
     } catch (submitError) {
-      setApiError(submitError instanceof Error ? submitError.message : "Failed to update trading status");
+      setApiError(submitError instanceof Error ? submitError.message : "Failed to update auto buy");
     } finally {
-      setIsTradingUpdating(false);
+      setUpdatingTradingMode(null);
+    }
+  }
+
+  async function toggleProfitWatcher() {
+    try {
+      setApiError("");
+      setUpdatingTradingMode("profit");
+      const status = profitEnabled ? await stopProfitWatcher() : await startProfitWatcher();
+      setCopyEnabled(status.copyEnabled);
+      setProfitEnabled(status.profitEnabled);
+    } catch (submitError) {
+      setApiError(submitError instanceof Error ? submitError.message : "Failed to update auto sell");
+    } finally {
+      setUpdatingTradingMode(null);
     }
   }
 
@@ -277,6 +294,22 @@ export function App() {
       await refreshAnalytics();
     } catch (submitError) {
       setApiError(submitError instanceof Error ? submitError.message : "Failed to close position");
+    }
+  }
+
+  async function repeatBuyKnownToken(tokenMint: string) {
+    try {
+      setApiError("");
+      setRepeatBuyingMint(tokenMint);
+      const result = await repeatBuyToken(tokenMint, buyAmountSol);
+      setPositions(result.activePositions);
+      setClosedPositions(result.closedPositions);
+      setWallet(result.wallet);
+      await refreshAnalytics();
+    } catch (submitError) {
+      setApiError(submitError instanceof Error ? submitError.message : "Failed to repeat buy token");
+    } finally {
+      setRepeatBuyingMint(null);
     }
   }
 
@@ -295,9 +328,11 @@ export function App() {
       <Sidebar activeView={activeView} onViewChange={setActiveView} />
       <section className="workspace">
         <Topbar
-          tradingEnabled={tradingEnabled}
-          isTradingUpdating={isTradingUpdating}
-          onToggleTrading={toggleTrading}
+          copyEnabled={copyEnabled}
+          profitEnabled={profitEnabled}
+          updatingMode={updatingTradingMode}
+          onToggleCopy={toggleCopyTrading}
+          onToggleProfit={toggleProfitWatcher}
         />
         {apiError ? <div className="api-error">{apiError}</div> : null}
         {isLoading ? <div className="loading-state">Loading backend state</div> : null}
@@ -331,7 +366,14 @@ export function App() {
           />
         ) : null}
         {activeView === "positions" ? (
-          <PositionsView positions={positions} closedPositions={closedPositions} onSellPosition={sellPosition} />
+          <PositionsView
+            positions={positions}
+            closedPositions={closedPositions}
+            buyAmountSol={buyAmountSol}
+            repeatBuyingMint={repeatBuyingMint}
+            onRepeatBuyToken={repeatBuyKnownToken}
+            onSellPosition={sellPosition}
+          />
         ) : null}
         {activeView === "traders" ? (
           <TradersView
@@ -344,7 +386,9 @@ export function App() {
             removeTrader={removeTrader}
           />
         ) : null}
-        {activeView === "analytics" ? <AnalyticsView traders={analytics} /> : null}
+        {activeView === "analytics" ? (
+          <AnalyticsView traders={analytics} manualTokens={manualTokenAnalytics} />
+        ) : null}
         {activeView === "logs" ? (
           <LogsView logs={logs} isRefreshing={isLogsRefreshing} onDeleteLog={removeLog} onRefresh={refreshLogs} />
         ) : null}

@@ -1,10 +1,15 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import { sendError, sendJson } from "../http/response";
-import { listTraderAnalytics } from "../services/analytics";
+import { listManualTokenAnalytics, listTraderAnalytics } from "../services/analytics";
 
 export async function handleAnalytics(request: IncomingMessage, response: ServerResponse, resource?: string) {
   if (request.method === "GET" && resource === "traders") {
     sendJson(response, 200, { data: listTraderAnalytics() });
+    return;
+  }
+
+  if (request.method === "GET" && resource === "manual-tokens") {
+    sendJson(response, 200, { data: listManualTokenAnalytics() });
     return;
   }
 
