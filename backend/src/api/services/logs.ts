@@ -83,12 +83,24 @@ export function createBotLog(input: CreateLogInput) {
   return log;
 }
 
-export function listBotLogs(limit = 200) {
+export function listBotLogs(limit = 200, event?: string) {
   const normalizedLimit = Number.isFinite(limit) && limit > 0 && limit <= 1000 ? limit : 200;
-  const rows = db
-    .prepare("SELECT * FROM bot_logs ORDER BY created_at DESC LIMIT ?")
-    .all(normalizedLimit) as DbLog[];
+  const normalizedEvent = event?.trim();
+  const rows = normalizedEvent
+    ? (db
+        .prepare("SELECT * FROM bot_logs WHERE event = ? ORDER BY created_at DESC LIMIT ?")
+        .all(normalizedEvent, normalizedLimit) as DbLog[])
+    : (db
+        .prepare("SELECT * FROM bot_logs ORDER BY created_at DESC LIMIT ?")
+        .all(normalizedLimit) as DbLog[]);
   return rows.map(toLog);
+}
+
+export function listBotLogEvents() {
+  const rows = db
+    .prepare("SELECT DISTINCT event FROM bot_logs ORDER BY event ASC")
+    .all() as Array<{ event: string }>;
+  return rows.map((row) => row.event);
 }
 
 export function deleteBotLog(id: string) {

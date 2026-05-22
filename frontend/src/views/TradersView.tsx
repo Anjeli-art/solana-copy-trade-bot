@@ -1,6 +1,6 @@
-import { Download, Plus, Trash2, Wallet } from "lucide-react";
+import { Check, Copy, Download, Plus, Trash2, Wallet } from "lucide-react";
+import { useState } from "react";
 import type { Trader, TraderFormHandler } from "../types";
-import { shortAddress } from "../utils/format";
 import { exportTraders } from "../utils/traders";
 
 type TradersViewProps = {
@@ -22,6 +22,14 @@ export function TradersView({
   addTrader,
   removeTrader
 }: TradersViewProps) {
+  const [copiedTrader, setCopiedTrader] = useState<string | null>(null);
+
+  async function copyTraderAddress(address: string) {
+    await navigator.clipboard.writeText(address);
+    setCopiedTrader(address);
+    window.setTimeout(() => setCopiedTrader((current) => (current === address ? null : current)), 1200);
+  }
+
   return (
     <section className="trader-section">
       <div className="section-head">
@@ -62,10 +70,20 @@ export function TradersView({
                 <Wallet size={18} />
               </div>
               <div className="trader-meta">
-                <strong title={trader.address}>{shortAddress(trader.address)}</strong>
+                <div className="trader-address-line">
+                  <strong title={trader.address}>{trader.address}</strong>
+                  <button
+                    className="trader-copy-button"
+                    type="button"
+                    aria-label="Copy trader wallet"
+                    title="Copy trader wallet"
+                    onClick={() => copyTraderAddress(trader.address)}
+                  >
+                    {copiedTrader === trader.address ? <Check size={13} /> : <Copy size={13} />}
+                  </button>
+                </div>
                 <span>{new Date(trader.createdAt).toLocaleString()}</span>
               </div>
-              <div className="trader-status">Ready</div>
               <button
                 className="icon-button"
                 type="button"

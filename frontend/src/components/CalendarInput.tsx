@@ -12,11 +12,6 @@ const monthFormatter = new Intl.DateTimeFormat(undefined, {
   month: "long",
   year: "numeric"
 });
-const displayFormatter = new Intl.DateTimeFormat(undefined, {
-  day: "2-digit",
-  month: "short",
-  year: "numeric"
-});
 const weekdayLabels = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 
 function toDateInputValue(date: Date) {
@@ -31,6 +26,12 @@ function parseDateValue(value: string) {
   const [year, month, day] = value.split("-").map(Number);
   if (!year || !month || !day) return undefined;
   return new Date(year, month - 1, day);
+}
+
+function formatDisplayDate(date: Date) {
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  return `${day}.${month}.${date.getFullYear()}`;
 }
 
 function sameDay(left: Date, right: Date) {
@@ -99,7 +100,7 @@ export function CalendarInput({ label, value, onChange, allowClear = true }: Cal
         onClick={() => setIsOpen((current) => !current)}
       >
         <CalendarDays size={16} />
-        <strong>{selectedDate ? displayFormatter.format(selectedDate) : "Date"}</strong>
+        <strong>{selectedDate ? formatDisplayDate(selectedDate) : "Date"}</strong>
       </button>
       {isOpen ? (
         <div className="calendar-popover">

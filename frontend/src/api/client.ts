@@ -1,4 +1,13 @@
-import type { BotLog, BotWallet, ClosedPosition, ManualTokenAnalytics, Position, Trader, TraderAnalytics } from "../types";
+import type {
+  BotLog,
+  BotWallet,
+  ClosedPosition,
+  ManualRepeatToken,
+  ManualTokenAnalytics,
+  Position,
+  Trader,
+  TraderAnalytics
+} from "../types";
 
 type ApiResponse<T> = {
   data: T;
@@ -181,12 +190,31 @@ export async function repeatBuyToken(tokenMint: string, amountSol?: number) {
   };
 }
 
+export function getManualRepeatTokens() {
+  return request<ManualRepeatToken[]>("/api/manual-tokens");
+}
+
+export function deleteManualRepeatToken(tokenMint: string) {
+  return request<{ tokenMint: string }>(`/api/manual-tokens/${encodeURIComponent(tokenMint)}`, {
+    method: "DELETE"
+  });
+}
+
 export function refreshWallet() {
   return request<BotWallet>("/api/wallet");
 }
 
-export function getLogs(limit = 200) {
-  return request<BotLog[]>(`/api/logs?limit=${limit}`);
+export function getLogs(limit = 200, event?: string) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (event) {
+    params.set("event", event);
+  }
+
+  return request<BotLog[]>(`/api/logs?${params.toString()}`);
+}
+
+export function getLogEvents() {
+  return request<string[]>("/api/logs/events");
 }
 
 export function getTraderAnalytics() {

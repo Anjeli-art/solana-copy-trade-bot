@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { Download } from "lucide-react";
-import type { ClosedFilter, ClosedPosition, Position } from "../types";
+import { Download, Trash2 } from "lucide-react";
+import type { ClosedFilter, ClosedPosition, ManualRepeatToken, Position } from "../types";
 import { CalendarInput } from "../components/CalendarInput";
 import { ClosedPositionRow, PositionRow } from "../components/PositionRow";
 import { TokenIcon } from "../components/TokenIcon";
@@ -10,28 +10,22 @@ import { exportClosedPositions, filterClosedPositions } from "../utils/positions
 type PositionsViewProps = {
   positions: Position[];
   closedPositions?: ClosedPosition[];
+  manualRepeatTokens?: ManualRepeatToken[];
   compact?: boolean;
-  buyAmountSol?: number;
   repeatBuyingMint?: string | null;
   onRepeatBuyToken?: (tokenMint: string) => void;
+  onDeleteManualToken?: (tokenMint: string) => void;
   onSellPosition?: (id: string) => void;
-};
-
-type KnownToken = {
-  tokenMint: string;
-  tokenSymbol: string;
-  tokenName?: string;
-  tokenImage?: string;
-  platform: string;
 };
 
 export function PositionsView({
   positions,
   closedPositions = [],
+  manualRepeatTokens = [],
   compact = false,
-  buyAmountSol,
   repeatBuyingMint,
   onRepeatBuyToken,
+  onDeleteManualToken,
   onSellPosition
 }: PositionsViewProps) {
   const [closedFilter, setClosedFilter] = useState<ClosedFilter>("week");
@@ -39,21 +33,6 @@ export function PositionsView({
   const [customTo, setCustomTo] = useState(() => toDateInputValue(new Date()));
   const visiblePositions = compact ? positions.slice(0, 3) : positions;
   const hiddenPositionCount = compact ? Math.max(0, positions.length - visiblePositions.length) : 0;
-  const knownTokens = useMemo(() => {
-    const byMint = new Map<string, KnownToken>();
-    for (const position of [...positions, ...closedPositions]) {
-      if (!byMint.has(position.tokenMint)) {
-        byMint.set(position.tokenMint, {
-          tokenMint: position.tokenMint,
-          tokenSymbol: position.tokenSymbol,
-          tokenName: position.tokenName,
-          tokenImage: position.tokenImage,
-          platform: position.platform
-        });
-      }
-    }
-    return [...byMint.values()];
-  }, [closedPositions, positions]);
   const filteredClosedPositions = useMemo(
     () => filterClosedPositions(closedPositions, closedFilter, customFrom, customTo),
     [closedFilter, closedPositions, customFrom, customTo]
@@ -90,14 +69,14 @@ export function PositionsView({
             <div className="section-head">
               <div>
                 <p className="eyebrow">Manual repeat buy</p>
-                <h2>Known tokens</h2>
+                <h2>Manual positions</h2>
               </div>
             </div>
             <div className="repeat-token-list">
-              {knownTokens.length === 0 ? (
-                <div className="empty-state">No known tokens</div>
+              {manualRepeatTokens.length === 0 ? (
+                <div className="empty-state">No manual tokens</div>
               ) : (
-                knownTokens.map((token) => (
+                manualRepeatTokens.map((token) => (
 	                  <article className="repeat-token-row" key={token.tokenMint}>
 	                    <div className="repeat-token-asset">
 	                      <TokenIcon mint={token.tokenMint} symbol={token.tokenSymbol} tokenImage={token.tokenImage} />
@@ -113,7 +92,16 @@ export function PositionsView({
                       disabled={!onRepeatBuyToken || repeatBuyingMint === token.tokenMint}
                       onClick={() => onRepeatBuyToken?.(token.tokenMint)}
                     >
-                      {repeatBuyingMint === token.tokenMint ? "Buying" : `Buy ${buyAmountSol ?? ""} SOL`}
+                      {repeatBuyingMint === token.tokenMint ? "Buying" : "Buy"}
+                    </button>
+                    <button
+                      className="manual-token-delete-button"
+                      type="button"
+                      aria-label="Delete manual token"
+                      title="Delete manual token"
+                      onClick={() => onDeleteManualToken?.(token.tokenMint)}
+                    >
+                      <Trash2 size={16} />
                     </button>
                   </article>
                 ))

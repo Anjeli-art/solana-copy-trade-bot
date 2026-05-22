@@ -41,6 +41,14 @@ export type ClosedPosition = Position & {
   sellTx: string;
 };
 
+export type ManualRepeatToken = {
+  tokenMint: string;
+  tokenSymbol: string;
+  tokenName?: string;
+  tokenImage?: string;
+  platform: string;
+};
+
 export type ClosedFilter = "today" | "week" | "month" | "custom" | "all";
 
 export type BotLog = {

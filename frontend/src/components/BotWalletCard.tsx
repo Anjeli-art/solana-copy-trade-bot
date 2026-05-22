@@ -1,6 +1,7 @@
-import { RefreshCw, Wallet } from "lucide-react";
+import { Check, Copy, RefreshCw, Wallet } from "lucide-react";
+import { useState } from "react";
 import type { BotWallet } from "../types";
-import { formatSol, formatUsd, shortAddress } from "../utils/format";
+import { formatSol, formatUsd } from "../utils/format";
 
 type BotWalletCardProps = {
   wallet: BotWallet;
@@ -9,7 +10,18 @@ type BotWalletCardProps = {
 };
 
 export function BotWalletCard({ wallet, isRefreshing, onRefresh }: BotWalletCardProps) {
+  const [copiedWallet, setCopiedWallet] = useState(false);
   const usdValue = wallet.solBalance * wallet.solPriceUsd;
+
+  async function copyWalletAddress() {
+    if (!wallet.address) {
+      return;
+    }
+
+    await navigator.clipboard.writeText(wallet.address);
+    setCopiedWallet(true);
+    window.setTimeout(() => setCopiedWallet(false), 1200);
+  }
 
   return (
     <section className="wallet-balance-card">
@@ -17,9 +29,21 @@ export function BotWalletCard({ wallet, isRefreshing, onRefresh }: BotWalletCard
         <div className="wallet-card-icon">
           <Wallet size={22} />
         </div>
-        <div>
+        <div className="wallet-card-title">
           <p className="eyebrow">Bot wallet</p>
-          <h2>{shortAddress(wallet.address)}</h2>
+          <div className="wallet-address-line">
+            <h2 title={wallet.address}>{wallet.address || "-"}</h2>
+            <button
+              className="wallet-copy-button"
+              type="button"
+              aria-label="Copy bot wallet"
+              title="Copy bot wallet"
+              disabled={!wallet.address}
+              onClick={copyWalletAddress}
+            >
+              {copiedWallet ? <Check size={13} /> : <Copy size={13} />}
+            </button>
+          </div>
         </div>
       </div>
       <div className="wallet-balance-grid">

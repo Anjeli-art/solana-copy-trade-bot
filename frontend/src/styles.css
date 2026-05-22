@@ -10,11 +10,13 @@
 
 body {
   margin: 0;
+  overflow-x: hidden;
 }
 
 .app-shell {
   display: grid;
-  grid-template-columns: 248px 1fr;
+  grid-template-columns: 248px minmax(0, 1fr);
+  width: 100%;
   min-height: 100vh;
 }
 
@@ -62,6 +64,7 @@ body {
 }
 
 .workspace {
+  min-width: 0;
   padding: 22px 24px;
 }
 
@@ -169,14 +172,14 @@ select {
 .panel-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
 }
 
 .metric {
   display: grid;
-  gap: 10px;
-  min-height: 104px;
-  padding: 14px;
+  gap: 6px;
+  min-height: 78px;
+  padding: 12px;
   border: 1px solid #d9e0da;
   border-radius: 8px;
   background: #ffffff;
@@ -184,12 +187,13 @@ select {
 
 .metric span {
   color: #66746c;
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .metric strong {
   align-self: end;
-  font-size: 26px;
+  font-size: 21px;
   line-height: 1;
   white-space: nowrap;
 }
@@ -208,6 +212,7 @@ select {
   display: flex;
   align-items: center;
   gap: 14px;
+  min-width: 0;
 }
 
 .wallet-card-icon {
@@ -218,6 +223,55 @@ select {
   border-radius: 8px;
   background: #e8f2ec;
   color: #1f6b4d;
+}
+
+.wallet-card-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wallet-address-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.wallet-card-title h2 {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 14px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wallet-copy-button {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid #d4ded8;
+  border-radius: 7px;
+  padding: 0;
+  background: #ffffff;
+  color: #2e4638;
+  cursor: pointer;
+  flex: 0 0 22px;
+  line-height: 1;
+}
+
+.wallet-copy-button:hover:not(:disabled) {
+  border-color: #aebfb4;
+  background: #f6faf7;
+}
+
+.wallet-copy-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .wallet-balance-grid {
@@ -307,6 +361,7 @@ select {
 .positions-section,
 .trader-section,
 .analytics-section {
+  min-width: 0;
   margin-top: 18px;
   padding: 16px 18px;
   border: 1px solid #d9e0da;
@@ -528,15 +583,16 @@ select {
   display: grid;
   gap: 10px;
   margin-top: 18px;
+  min-width: 0;
 }
 
 .trader-row {
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) auto 36px;
+  grid-template-columns: 40px minmax(0, 1fr) 36px;
   align-items: center;
   gap: 12px;
-  min-height: 62px;
-  padding: 10px 12px;
+  min-height: 58px;
+  padding: 9px 12px;
   border: 1px solid #e1e7e2;
   border-radius: 8px;
   background: #fbfcfa;
@@ -558,24 +614,51 @@ select {
   min-width: 0;
 }
 
+.trader-address-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-start;
+  min-width: 0;
+  line-height: 22px;
+}
+
 .trader-meta strong {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 22px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .trader-meta span {
   color: #66746c;
-  font-size: 13px;
+  font-size: 12px;
 }
 
-.trader-status {
-  padding: 7px 10px;
-  border-radius: 8px;
-  background: #edf7ef;
-  color: #1d6845;
-  font-size: 13px;
-  font-weight: 700;
+.trader-copy-button {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid #d4ded8;
+  border-radius: 7px;
+  padding: 0;
+  background: #ffffff;
+  color: #2e4638;
+  cursor: pointer;
+  flex: 0 0 22px;
+  line-height: 1;
+}
+
+.trader-copy-button:hover {
+  border-color: #aebfb4;
+  background: #f6faf7;
 }
 
 .icon-button {
@@ -640,7 +723,7 @@ select {
 
 .analytics-summary span {
   color: #1f6b4d;
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 850;
 }
 
@@ -658,40 +741,43 @@ select {
 
 .analytics-summary strong {
   color: #66746c;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .analytics-table {
   display: grid;
   gap: 10px;
+  width: 100%;
+  min-width: 0;
 }
 
 .analytics-row {
   display: grid;
   grid-template-columns:
-    minmax(210px, 1.25fr)
-    minmax(86px, 0.5fr)
-    minmax(105px, 0.55fr)
-    minmax(95px, 0.5fr)
-    minmax(118px, 0.65fr)
-    minmax(105px, 0.55fr)
-    minmax(155px, 0.8fr);
+    minmax(170px, 1.25fr)
+    minmax(72px, 0.5fr)
+    minmax(86px, 0.55fr)
+    minmax(78px, 0.5fr)
+    minmax(98px, 0.65fr)
+    minmax(88px, 0.55fr)
+    minmax(125px, 0.8fr);
   align-items: center;
-  gap: 12px;
-  min-height: 72px;
-  padding: 12px;
+  gap: 10px;
+  min-height: 62px;
+  min-width: 0;
+  padding: 10px 12px;
   border: 1px solid #e1e7e2;
   border-radius: 8px;
   background: #fbfcfa;
 }
 
 .analytics-head {
-  min-height: 38px;
+  min-height: 32px;
   padding: 0 12px;
   border: 0;
   background: transparent;
   color: #66746c;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
   text-transform: uppercase;
 }
@@ -715,6 +801,7 @@ select {
 .analytics-cell strong {
   overflow: hidden;
   color: #17201b;
+  font-size: 13px;
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -724,7 +811,7 @@ select {
 .analytics-cell span {
   overflow: hidden;
   color: #66746c;
-  font-size: 13px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -732,15 +819,18 @@ select {
 .positions-list {
   display: grid;
   gap: 10px;
+  width: 100%;
+  min-width: 0;
 }
 
 .position-row {
   display: grid;
-  grid-template-columns: 40px minmax(110px, 1.1fr) repeat(2, minmax(92px, 0.7fr)) minmax(90px, 0.7fr) minmax(90px, 0.7fr) auto auto;
+  grid-template-columns: 40px minmax(96px, 1.1fr) repeat(2, minmax(76px, 0.7fr)) minmax(74px, 0.7fr) minmax(74px, 0.7fr) 92px 74px;
   align-items: center;
-  gap: 12px;
-  min-height: 76px;
-  padding: 12px;
+  gap: 10px;
+  min-height: 64px;
+  min-width: 0;
+  padding: 10px 12px;
   border: 1px solid #e1e7e2;
   border-radius: 8px;
   background: #fbfcfa;
@@ -795,6 +885,10 @@ select {
 .position-cell strong,
 .position-pnl strong {
   overflow: hidden;
+  color: #17201b;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -803,7 +897,8 @@ select {
 .position-pnl span {
   overflow: hidden;
   color: #66746c;
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -811,7 +906,8 @@ select {
 .position-token-text span {
   overflow: hidden;
   color: #66746c;
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -859,11 +955,11 @@ select {
 
 .repeat-token-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) 92px 72px 36px;
   align-items: center;
-  gap: 12px;
-  min-height: 58px;
-  padding: 10px 12px;
+  gap: 10px;
+  min-height: 54px;
+  padding: 9px 12px;
   border: 1px solid #e1e7e2;
   border-radius: 8px;
   background: #fbfcfa;
@@ -890,25 +986,54 @@ select {
   white-space: nowrap;
 }
 
+.repeat-token-main strong {
+  color: #17201b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .repeat-token-main span {
   color: #66746c;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .repeat-buy-button {
-  min-height: 34px;
+  width: 100%;
+  min-height: 30px;
   border: 0;
   border-radius: 8px;
   padding: 0 12px;
   background: #1f6b4d;
   color: #ffffff;
+  font-size: 13px;
   font-weight: 800;
   cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .repeat-buy-button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+.manual-token-delete-button {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0;
+  background: transparent;
+  color: #77847d;
+  cursor: pointer;
+}
+
+.manual-token-delete-button:hover {
+  background: #f4e8e6;
+  color: #9b2c20;
 }
 
 .position-pnl.positive strong,
@@ -922,41 +1047,55 @@ select {
 }
 
 .platform-pill {
-  padding: 7px 10px;
+  min-width: 0;
+  padding: 6px 9px;
   border-radius: 8px;
   background: #eef2f5;
   color: #44515c;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .platform-stack {
   display: grid;
   gap: 3px;
-  padding: 7px 10px;
+  min-width: 0;
+  padding: 6px 9px;
   border-radius: 8px;
   background: #eef2f5;
 }
 
 .platform-stack span {
+  overflow: hidden;
   color: #66746c;
-  font-size: 12px;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .platform-stack strong {
+  overflow: hidden;
   color: #44515c;
-  font-size: 13px;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sell-button {
-  min-height: 38px;
-  padding: 0 14px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 12px;
   border: 0;
   border-radius: 8px;
   background: #17201b;
   color: #ffffff;
   cursor: pointer;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .sell-button:hover {
@@ -1034,8 +1173,12 @@ select {
 }
 
 .calendar-trigger strong {
+  overflow: hidden;
   font-size: 13px;
   font-weight: 800;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .calendar-trigger svg {
@@ -1270,12 +1413,17 @@ select {
 }
 
 .reason-pill {
-  padding: 7px 10px;
+  min-width: 0;
+  padding: 6px 9px;
   border-radius: 8px;
   color: #ffffff;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
   text-transform: capitalize;
+  white-space: nowrap;
 }
 
 .reason-pill.take-profit {
@@ -1297,6 +1445,8 @@ select {
 .logs-table {
   display: grid;
   gap: 8px;
+  width: 100%;
+  min-width: 0;
 }
 
 .logs-section-head {
@@ -1306,7 +1456,7 @@ select {
 
 .logs-actions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(132px, 1fr)) minmax(118px, 0.7fr) 40px;
+  grid-template-columns: 128px 128px 128px 128px minmax(160px, 1fr) 40px;
   align-items: end;
   gap: 10px;
   width: 100%;
@@ -1319,6 +1469,7 @@ select {
 .logs-actions label {
   display: grid;
   gap: 5px;
+  min-width: 0;
 }
 
 .logs-actions label > span,
@@ -1339,7 +1490,7 @@ select {
   font: inherit;
 }
 
-.log-status-filter select {
+.log-select-filter select {
   width: 100%;
   min-height: 38px;
   border: 1px solid #d9e1dc;
@@ -1354,6 +1505,7 @@ select {
   cursor: pointer;
   font: inherit;
   font-weight: 800;
+  min-width: 0;
 }
 
 .log-entry {
@@ -1363,22 +1515,23 @@ select {
 
 .logs-row {
   display: grid;
-  grid-template-columns: 28px 170px 76px minmax(150px, 0.8fr) 130px 110px minmax(220px, 1.4fr);
+  grid-template-columns: 28px 145px 64px minmax(120px, 0.8fr) 108px 96px minmax(160px, 1.4fr);
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 46px;
-  padding: 10px 12px;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 12px;
   border: 1px solid #e1e7e2;
   border-radius: 8px;
   background: #fbfcfa;
   color: #344039;
-  font-size: 13px;
+  font-size: 12px;
   text-align: left;
 }
 
 .logs-head {
-  min-height: 36px;
+  min-height: 32px;
   background: #eef2f5;
   color: #66746c;
   font-weight: 800;

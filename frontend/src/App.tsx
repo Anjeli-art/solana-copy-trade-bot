@@ -1,10 +1,13 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   addTrackedTrader,
   closeActivePosition,
   deleteLog,
+  deleteManualRepeatToken,
   deleteTrackedTrader,
+  getLogEvents,
   getLogs,
+  getManualRepeatTokens,
   getManualTokenAnalytics,
   getTraderAnalytics,
   getTradingStatus,
@@ -20,7 +23,17 @@ import {
 import { MetricsGrid } from "./components/MetricsGrid";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
-import type { BotLog, BotWallet, ClosedPosition, ManualTokenAnalytics, Position, Trader, TraderAnalytics, View } from "./types";
+import type {
+  BotLog,
+  BotWallet,
+  ClosedPosition,
+  ManualRepeatToken,
+  ManualTokenAnalytics,
+  Position,
+  Trader,
+  TraderAnalytics,
+  View
+} from "./types";
 import { AnalyticsView } from "./views/AnalyticsView";
 import { DashboardView } from "./views/DashboardView";
 import { LogsView } from "./views/LogsView";
@@ -44,6 +57,9 @@ export function App() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [closedPositions, setClosedPositions] = useState<ClosedPosition[]>([]);
   const [logs, setLogs] = useState<BotLog[]>([]);
+  const [logEvents, setLogEvents] = useState<string[]>([]);
+  const [logEventFilter, setLogEventFilter] = useState("all");
+  const [manualRepeatTokens, setManualRepeatTokens] = useState<ManualRepeatToken[]>([]);
   const [analytics, setAnalytics] = useState<TraderAnalytics[]>([]);
   const [manualTokenAnalytics, setManualTokenAnalytics] = useState<ManualTokenAnalytics[]>([]);
   const [wallet, setWallet] = useState<BotWallet>(EMPTY_WALLET);
@@ -60,12 +76,14 @@ export function App() {
   const [error, setError] = useState("");
   const [apiError, setApiError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [hasLoadedState, setHasLoadedState] = useState(false);
   const [isWalletRefreshing, setIsWalletRefreshing] = useState(false);
   const [copyEnabled, setCopyEnabled] = useState(false);
   const [profitEnabled, setProfitEnabled] = useState(false);
   const [updatingTradingMode, setUpdatingTradingMode] = useState<"copy" | "profit" | null>(null);
   const [isLogsRefreshing, setIsLogsRefreshing] = useState(false);
   const [repeatBuyingMint, setRepeatBuyingMint] = useState<string | null>(null);
+  const didLoadLogEvents = useRef(false);
 
   const traderCount = useMemo(() => traders.length, [traders]);
   const openPositions = positions.length;
@@ -88,6 +106,8 @@ export function App() {
       setDraftPositionTimeoutMinutes(state.settings.positionTimeoutMinutes);
       setBuyAmountSol(state.settings.buyAmountSol);
       setDraftBuyAmountSol(state.settings.buyAmountSol);
+      setManualRepeatTokens(await getManualRepeatTokens());
+      setHasLoadedState(true);
     } catch (fetchError) {
       setApiError(fetchError instanceof Error ? fetchError.message : "Backend API unavailable");
     } finally {
@@ -95,11 +115,26 @@ export function App() {
     }
   }
 
-  async function refreshLogs() {
+  async function refreshLogEvents() {
+    if (didLoadLogEvents.current) {
+      return;
+    }
+
+    didLoadLogEvents.current = true;
+    try {
+      const nextEvents = await getLogEvents();
+      setLogEvents(nextEvents);
+    } catch (fetchError) {
+      didLoadLogEvents.current = false;
+      setApiError(fetchError instanceof Error ? fetchError.message : "Failed to load log events");
+    }
+  }
+
+  async function refreshLogs(eventFilter = logEventFilter) {
     try {
       setApiError("");
       setIsLogsRefreshing(true);
-      const nextLogs = await getLogs();
+      const nextLogs = await getLogs(200, eventFilter === "all" ? undefined : eventFilter);
       setLogs(nextLogs);
     } catch (fetchError) {
       setApiError(fetchError instanceof Error ? fetchError.message : "Failed to load logs");
@@ -123,6 +158,7 @@ export function App() {
   useEffect(() => {
     refreshState();
     refreshLogs();
+    refreshLogEvents();
     refreshAnalytics();
   }, []);
 
@@ -155,7 +191,7 @@ export function App() {
       window.clearInterval(logsTimer);
       window.clearInterval(stateTimer);
     };
-  }, [hasActiveAutomation]);
+  }, [hasActiveAutomation, logEventFilter]);
 
   useEffect(() => {
     if (wallet.solPriceUsd > 0) {
@@ -305,6 +341,7 @@ export function App() {
       setPositions(result.activePositions);
       setClosedPositions(result.closedPositions);
       setWallet(result.wallet);
+      setManualRepeatTokens(await getManualRepeatTokens());
       await refreshAnalytics();
     } catch (submitError) {
       setApiError(submitError instanceof Error ? submitError.message : "Failed to repeat buy token");
@@ -323,6 +360,21 @@ export function App() {
     }
   }
 
+  async function removeManualRepeatToken(tokenMint: string) {
+    try {
+      setApiError("");
+      await deleteManualRepeatToken(tokenMint);
+      setManualRepeatTokens((current) => current.filter((token) => token.tokenMint !== tokenMint));
+    } catch (submitError) {
+      setApiError(submitError instanceof Error ? submitError.message : "Failed to delete manual token");
+    }
+  }
+
+  async function changeLogEventFilter(nextEvent: string) {
+    setLogEventFilter(nextEvent);
+    await refreshLogs(nextEvent);
+  }
+
   return (
     <main className="app-shell">
       <Sidebar activeView={activeView} onViewChange={setActiveView} />
@@ -336,13 +388,15 @@ export function App() {
         />
         {apiError ? <div className="api-error">{apiError}</div> : null}
         {isLoading ? <div className="loading-state">Loading backend state</div> : null}
-        <MetricsGrid
-          openPositions={openPositions}
-          traderCount={traderCount}
-          takeProfit={takeProfit}
-          buyAmountSol={buyAmountSol}
-        />
-        {activeView === "dashboard" ? (
+        {hasLoadedState ? (
+          <MetricsGrid
+            openPositions={openPositions}
+            traderCount={traderCount}
+            takeProfit={takeProfit}
+            buyAmountSol={buyAmountSol}
+          />
+        ) : null}
+        {hasLoadedState && activeView === "dashboard" ? (
           <DashboardView
             botWallet={{ ...wallet, solPriceUsd }}
             positions={positions}
@@ -365,17 +419,18 @@ export function App() {
             onSellPosition={sellPosition}
           />
         ) : null}
-        {activeView === "positions" ? (
+        {hasLoadedState && activeView === "positions" ? (
           <PositionsView
             positions={positions}
             closedPositions={closedPositions}
-            buyAmountSol={buyAmountSol}
+            manualRepeatTokens={manualRepeatTokens}
             repeatBuyingMint={repeatBuyingMint}
             onRepeatBuyToken={repeatBuyKnownToken}
+            onDeleteManualToken={removeManualRepeatToken}
             onSellPosition={sellPosition}
           />
         ) : null}
-        {activeView === "traders" ? (
+        {hasLoadedState && activeView === "traders" ? (
           <TradersView
             traders={traders}
             walletAddress={walletAddress}
@@ -386,11 +441,19 @@ export function App() {
             removeTrader={removeTrader}
           />
         ) : null}
-        {activeView === "analytics" ? (
+        {hasLoadedState && activeView === "analytics" ? (
           <AnalyticsView traders={analytics} manualTokens={manualTokenAnalytics} />
         ) : null}
-        {activeView === "logs" ? (
-          <LogsView logs={logs} isRefreshing={isLogsRefreshing} onDeleteLog={removeLog} onRefresh={refreshLogs} />
+        {hasLoadedState && activeView === "logs" ? (
+          <LogsView
+            logs={logs}
+            eventOptions={logEvents}
+            eventFilter={logEventFilter}
+            isRefreshing={isLogsRefreshing}
+            onEventFilterChange={changeLogEventFilter}
+            onDeleteLog={removeLog}
+            onRefresh={() => refreshLogs()}
+          />
         ) : null}
       </section>
     </main>

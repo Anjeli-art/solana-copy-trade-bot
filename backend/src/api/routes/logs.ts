@@ -1,12 +1,18 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import { sendError, sendJson } from "../http/response";
-import { deleteBotLog, listBotLogs } from "../services/logs";
+import { deleteBotLog, listBotLogEvents, listBotLogs } from "../services/logs";
 
 export async function handleLogs(request: IncomingMessage, response: ServerResponse, id?: string) {
+  if (request.method === "GET" && id === "events") {
+    sendJson(response, 200, { data: listBotLogEvents() });
+    return;
+  }
+
   if (request.method === "GET" && !id) {
     const url = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1:3001"}`);
     const limit = Number(url.searchParams.get("limit") || 200);
-    sendJson(response, 200, { data: listBotLogs(limit) });
+    const event = url.searchParams.get("event") || undefined;
+    sendJson(response, 200, { data: listBotLogs(limit, event) });
     return;
   }
 

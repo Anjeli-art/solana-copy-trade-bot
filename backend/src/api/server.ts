@@ -3,6 +3,7 @@ import { sendError, sendJson, sendNoContent } from "./http/response";
 import { handleAnalytics } from "./routes/analytics";
 import { handleActivePositions, handleClosedPositions } from "./routes/positions";
 import { handleLogs } from "./routes/logs";
+import { handleManualTokens } from "./routes/manualTokens";
 import { handleRaydium } from "./routes/raydium";
 import { handleSwap } from "./routes/swap";
 import { handleSettings } from "./routes/settings";
@@ -65,6 +66,11 @@ const server = http.createServer(async (request, response) => {
 
     if (parts[0] === "api" && parts[1] === "logs") {
       await handleLogs(request, response, parts[2]);
+      return;
+    }
+
+    if (parts[0] === "api" && parts[1] === "manual-tokens") {
+      await handleManualTokens(request, response, parts[2]);
       return;
     }
 
