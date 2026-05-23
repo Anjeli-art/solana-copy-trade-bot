@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs/promises";
 import dotenv from "dotenv";
-import { PublicKey, VersionedTransaction } from "@solana/web3.js";
+import { LAMPORTS_PER_SOL, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { SPL_MINT_LAYOUT } from "@raydium-io/raydium-sdk";
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { getRaydiumConnection, getTradingWallet } from "./raydiumSwap";
@@ -31,6 +31,11 @@ export type JupiterSwapResult = {
   signature?: string;
   tokenAmountDelta?: number;
   outputSol?: number;
+  networkFeeSol?: number;
+  priorityFeeSol?: number;
+  quotedOutAmount?: number;
+  quotedOutSol?: number;
+  actualSolChange?: number;
 };
 
 export type JupiterQuote = {
@@ -45,6 +50,7 @@ const DEFAULT_REQUEST_RETRIES = 1;
 const DEFAULT_RATE_LIMIT_RETRY_MS = 60000;
 const DEFAULT_REQUEST_INTERVAL_MS = 2500;
 const RATE_LIMIT_LOCK_STALE_MS = 10000;
+const BASE_SIGNATURE_FEE_LAMPORTS = 5000;
 const rateLimitDir = path.resolve(__dirname, "../../../data");
 const rateLimitStatePath = path.join(rateLimitDir, "jupiter-rate-limit.json");
 const rateLimitLockPath = path.join(rateLimitDir, "jupiter-rate-limit.lock");
@@ -209,6 +215,50 @@ export function rawToUiAmount(rawAmount: string | undefined, decimals: number) {
   return Number(rawAmount || 0) / 10 ** decimals;
 }
 
+async function getSwapExecutionCosts(input: {
+  signature: string;
+  wallet: PublicKey;
+  signatureCount: number;
+}) {
+  const connection = getRaydiumConnection();
+  let transaction: Awaited<ReturnType<typeof connection.getTransaction>> | null = null;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    transaction = await connection.getTransaction(input.signature, {
+      commitment: "confirmed",
+      maxSupportedTransactionVersion: 0
+    });
+
+    if (transaction?.meta) {
+      break;
+    }
+
+    await sleep(500);
+  }
+
+  const feeLamports = transaction?.meta?.fee;
+  const networkFeeSol = typeof feeLamports === "number" ? feeLamports / LAMPORTS_PER_SOL : undefined;
+  const baseFeeLamports = input.signatureCount * BASE_SIGNATURE_FEE_LAMPORTS;
+  const priorityFeeSol =
+    typeof feeLamports === "number" ? Math.max(0, feeLamports - baseFeeLamports) / LAMPORTS_PER_SOL : undefined;
+
+  const message: any = transaction?.transaction.message;
+  const accountKeys = message?.staticAccountKeys || message?.accountKeys || [];
+  const walletIndex = accountKeys.findIndex((key: PublicKey) => key?.equals?.(input.wallet));
+  const preLamports = walletIndex >= 0 ? transaction?.meta?.preBalances?.[walletIndex] : undefined;
+  const postLamports = walletIndex >= 0 ? transaction?.meta?.postBalances?.[walletIndex] : undefined;
+  const actualSolChange =
+    typeof preLamports === "number" && typeof postLamports === "number"
+      ? (postLamports - preLamports) / LAMPORTS_PER_SOL
+      : undefined;
+
+  return {
+    networkFeeSol,
+    priorityFeeSol,
+    actualSolChange
+  };
+}
+
 async function getTokenBalance(tokenMint: string) {
   const connection = getRaydiumConnection();
   const wallet = getTradingWallet();
@@ -318,12 +368,18 @@ async function executeJupiterSwap(params: {
       },
       "confirmed"
     );
+    const executionCosts = await getSwapExecutionCosts({
+      signature,
+      wallet: wallet.publicKey,
+      signatureCount: transaction.signatures.length || 1
+    });
     const after = await getTokenBalance(params.tokenMint);
 
     return {
       signature,
       tokenAmountDelta: params.side === "buy" ? Math.max(0, after - before) : Math.max(0, before - after),
-      quoteResponse
+      quoteResponse,
+      executionCosts
     };
   } catch (error) {
     createBotLog({
@@ -343,26 +399,31 @@ async function executeJupiterSwap(params: {
 }
 
 export async function executeJupiterBuy(tokenMint: string, amountSol: number): Promise<JupiterSwapResult> {
-  const { signature, tokenAmountDelta } = await executeJupiterSwap({
+  const { signature, tokenAmountDelta, quoteResponse, executionCosts } = await executeJupiterSwap({
     tokenMint,
     side: "buy",
     inputMint: WSOL_MINT,
     outputMint: tokenMint,
     rawAmount: toRawAmount(amountSol, 9)
   });
+  const tokenDecimals = await getJupiterTokenDecimals(tokenMint).catch(() => undefined);
 
   return {
     tokenMint,
     side: "buy",
     route: "Jupiter",
     signature,
-    tokenAmountDelta
+    tokenAmountDelta,
+    quotedOutAmount: tokenDecimals === undefined ? tokenAmountDelta : rawToUiAmount(quoteResponse.outAmount, tokenDecimals),
+    networkFeeSol: executionCosts.networkFeeSol,
+    priorityFeeSol: executionCosts.priorityFeeSol,
+    actualSolChange: executionCosts.actualSolChange
   };
 }
 
 export async function executeJupiterSell(tokenMint: string, tokenAmount: number): Promise<JupiterSwapResult> {
   const tokenDecimals = await getJupiterTokenDecimals(tokenMint);
-  const { signature, tokenAmountDelta, quoteResponse } = await executeJupiterSwap({
+  const { signature, tokenAmountDelta, quoteResponse, executionCosts } = await executeJupiterSwap({
     tokenMint,
     side: "sell",
     inputMint: tokenMint,
@@ -376,7 +437,11 @@ export async function executeJupiterSell(tokenMint: string, tokenAmount: number)
     route: "Jupiter",
     signature,
     tokenAmountDelta,
-    outputSol: rawToUiAmount(quoteResponse.outAmount, 9)
+    outputSol: rawToUiAmount(quoteResponse.outAmount, 9),
+    quotedOutSol: rawToUiAmount(quoteResponse.outAmount, 9),
+    networkFeeSol: executionCosts.networkFeeSol,
+    priorityFeeSol: executionCosts.priorityFeeSol,
+    actualSolChange: executionCosts.actualSolChange
   };
 }
 

@@ -108,6 +108,10 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
       currentPriceUsd: entryPriceUsd,
       amountUsd,
       solSpent: amountSol,
+      buyNetworkFeeSol: result.networkFeeSol,
+      buyPriorityFeeSol: result.priorityFeeSol,
+      buyQuotedOutAmount: result.quotedOutAmount,
+      buyActualSolChange: result.actualSolChange,
       tokenAmount,
       openedAt: new Date().toISOString(),
       status: "open"
@@ -124,7 +128,11 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
         amountSol,
         tokenAmount,
         entryPriceUsd,
-        executionRoute: "Jupiter"
+        executionRoute: "Jupiter",
+        quotedOutAmount: result.quotedOutAmount,
+        networkFeeSol: result.networkFeeSol,
+        priorityFeeSol: result.priorityFeeSol,
+        actualSolChange: result.actualSolChange
       }
     });
 
@@ -198,6 +206,10 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
         currentPriceUsd: entryPriceUsd,
         amountUsd,
         solSpent: amountSol,
+        buyNetworkFeeSol: result.networkFeeSol,
+        buyPriorityFeeSol: result.priorityFeeSol,
+        buyQuotedOutAmount: result.quotedOutAmount,
+        buyActualSolChange: result.actualSolChange,
         tokenAmount,
         openedAt: new Date().toISOString(),
         status: "open"
@@ -216,7 +228,11 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
         amountSol,
         tokenAmount,
         entryPriceUsd,
-        executionRoute: "Jupiter"
+        executionRoute: "Jupiter",
+        quotedOutAmount: result.quotedOutAmount,
+        networkFeeSol: result.networkFeeSol,
+        priorityFeeSol: result.priorityFeeSol,
+        actualSolChange: result.actualSolChange
       }
     });
 
@@ -260,12 +276,20 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
         exitPriceUsd: exitPriceUsd || position.currentPriceUsd,
         amountUsd: position.amountUsd,
         solSpent: position.solSpent,
+        buyNetworkFeeSol: position.buyNetworkFeeSol,
+        buyPriorityFeeSol: position.buyPriorityFeeSol,
+        buyQuotedOutAmount: position.buyQuotedOutAmount,
+        buyActualSolChange: position.buyActualSolChange,
         tokenAmount: position.tokenAmount,
         openedAt: position.openedAt,
         exitPlatform: "Jupiter",
         closedAt: new Date().toISOString(),
         closeReason: "manual",
-        sellTx: result.signature
+        sellTx: result.signature,
+        sellNetworkFeeSol: result.networkFeeSol,
+        sellPriorityFeeSol: result.priorityFeeSol,
+        sellQuotedOutSol: result.quotedOutSol ?? result.outputSol,
+        sellActualSolChange: result.actualSolChange
       },
       pnlUsd,
       wallet
@@ -281,7 +305,11 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
       metadata: {
         exitPriceUsd: exitPriceUsd || position.currentPriceUsd,
         outputSol: result.outputSol,
-        executionRoute: "Jupiter"
+        executionRoute: "Jupiter",
+        quotedOutSol: result.quotedOutSol,
+        networkFeeSol: result.networkFeeSol,
+        priorityFeeSol: result.priorityFeeSol,
+        actualSolChange: result.actualSolChange
       }
     });
 

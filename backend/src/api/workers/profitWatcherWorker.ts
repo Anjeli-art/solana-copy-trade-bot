@@ -56,7 +56,7 @@ async function closePositionAfterSell(
   position: ActivePosition,
   exitPriceUsd: number,
   closeReason: "take-profit" | "stop-loss" | "timeout",
-  sellTx?: string
+  sellResult?: Awaited<ReturnType<typeof executeJupiterSell>>
 ) {
   const pnlUsd = getPnlUsd(position, exitPriceUsd);
 
@@ -72,12 +72,20 @@ async function closePositionAfterSell(
       exitPriceUsd,
       amountUsd: position.amountUsd,
       solSpent: position.solSpent,
+      buyNetworkFeeSol: position.buyNetworkFeeSol,
+      buyPriorityFeeSol: position.buyPriorityFeeSol,
+      buyQuotedOutAmount: position.buyQuotedOutAmount,
+      buyActualSolChange: position.buyActualSolChange,
       tokenAmount: position.tokenAmount,
       openedAt: position.openedAt,
       exitPlatform: "Jupiter",
       closedAt: new Date().toISOString(),
       closeReason,
-      sellTx
+      sellTx: sellResult?.signature,
+      sellNetworkFeeSol: sellResult?.networkFeeSol,
+      sellPriorityFeeSol: sellResult?.priorityFeeSol,
+      sellQuotedOutSol: sellResult?.quotedOutSol ?? sellResult?.outputSol,
+      sellActualSolChange: sellResult?.actualSolChange
     },
     pnlUsd
   );
@@ -222,7 +230,7 @@ async function inspectPosition(
     { ...position, currentPriceUsd, status: "selling" },
     currentPriceUsd,
     closeReason,
-    result.signature
+    result
   );
 
   createBotLog({
@@ -244,7 +252,11 @@ async function inspectPosition(
       exitPriceUsd: currentPriceUsd,
       sourcePlatform: position.buyPlatform,
       executionRoute: "Jupiter",
-      outputSol: result.outputSol
+      outputSol: result.outputSol,
+      quotedOutSol: result.quotedOutSol,
+      networkFeeSol: result.networkFeeSol,
+      priorityFeeSol: result.priorityFeeSol,
+      actualSolChange: result.actualSolChange
     }
   });
 

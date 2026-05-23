@@ -11,6 +11,10 @@ export type TraderAnalytics = {
   realizedPnlUsd: number;
   unrealizedPnlUsd: number;
   totalPnlUsd: number;
+  profitPnlUsd: number;
+  lossPnlUsd: number;
+  totalFeeSol: number;
+  totalFeeUsd: number;
   totalPnlPercent: number;
   winCount: number;
   lossCount: number;
@@ -33,6 +37,10 @@ export type ManualTokenAnalytics = {
   realizedPnlUsd: number;
   unrealizedPnlUsd: number;
   totalPnlUsd: number;
+  profitPnlUsd: number;
+  lossPnlUsd: number;
+  totalFeeSol: number;
+  totalFeeUsd: number;
   totalPnlPercent: number;
   winCount: number;
   lossCount: number;
@@ -53,6 +61,10 @@ type TraderAnalyticsRow = {
   realized_pnl_usd: number;
   unrealized_pnl_usd: number;
   total_pnl_usd: number;
+  profit_pnl_usd: number;
+  loss_pnl_usd: number;
+  total_fee_sol: number;
+  total_fee_usd: number;
   win_count: number;
   loss_count: number;
   first_trade_at: string;
@@ -72,6 +84,10 @@ type ManualTokenAnalyticsRow = {
   realized_pnl_usd: number;
   unrealized_pnl_usd: number;
   total_pnl_usd: number;
+  profit_pnl_usd: number;
+  loss_pnl_usd: number;
+  total_fee_sol: number;
+  total_fee_usd: number;
   win_count: number;
   loss_count: number;
   first_trade_at: string;
@@ -93,6 +109,10 @@ export function listTraderAnalytics(): TraderAnalytics[] {
           COALESCE(SUM(CASE WHEN trades.position_state = 'closed' THEN trades.pnl_usd ELSE 0 END), 0) AS realized_pnl_usd,
           COALESCE(SUM(CASE WHEN trades.position_state = 'active' THEN trades.pnl_usd ELSE 0 END), 0) AS unrealized_pnl_usd,
           COALESCE(SUM(trades.pnl_usd), 0) AS total_pnl_usd,
+          COALESCE(SUM(CASE WHEN trades.pnl_usd > 0 THEN trades.pnl_usd ELSE 0 END), 0) AS profit_pnl_usd,
+          COALESCE(SUM(CASE WHEN trades.pnl_usd < 0 THEN trades.pnl_usd ELSE 0 END), 0) AS loss_pnl_usd,
+          COALESCE(SUM(trades.fee_sol), 0) AS total_fee_sol,
+          COALESCE(SUM(trades.fee_sol), 0) * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0) AS total_fee_usd,
           SUM(CASE WHEN trades.position_state = 'closed' AND trades.pnl_usd > 0 THEN 1 ELSE 0 END) AS win_count,
           SUM(CASE WHEN trades.position_state = 'closed' AND trades.pnl_usd < 0 THEN 1 ELSE 0 END) AS loss_count,
           MIN(trades.opened_at) AS first_trade_at,
@@ -107,6 +127,7 @@ export function listTraderAnalytics(): TraderAnalytics[] {
               WHEN entry_price_usd > 0 THEN amount_usd * (current_price_usd / entry_price_usd) - amount_usd
               ELSE 0
             END AS pnl_usd,
+            COALESCE(buy_network_fee_sol, 0) AS fee_sol,
             'active' AS position_state
           FROM active_positions
           WHERE source_trader NOT IN ('manual', 'manual-repeat')
@@ -120,6 +141,7 @@ export function listTraderAnalytics(): TraderAnalytics[] {
               WHEN entry_price_usd > 0 THEN amount_usd * (exit_price_usd / entry_price_usd) - amount_usd
               ELSE 0
             END AS pnl_usd,
+            COALESCE(buy_network_fee_sol, 0) + COALESCE(sell_network_fee_sol, 0) AS fee_sol,
             'closed' AS position_state
           FROM closed_positions
           WHERE source_trader NOT IN ('manual', 'manual-repeat')
@@ -149,6 +171,10 @@ export function listTraderAnalytics(): TraderAnalytics[] {
       realizedPnlUsd: Number(row.realized_pnl_usd || 0),
       unrealizedPnlUsd: Number(row.unrealized_pnl_usd || 0),
       totalPnlUsd,
+      profitPnlUsd: Number(row.profit_pnl_usd || 0),
+      lossPnlUsd: Number(row.loss_pnl_usd || 0),
+      totalFeeSol: Number(row.total_fee_sol || 0),
+      totalFeeUsd: Number(row.total_fee_usd || 0),
       totalPnlPercent: totalAmountUsd > 0 ? (totalPnlUsd / totalAmountUsd) * 100 : 0,
       winCount,
       lossCount: Number(row.loss_count || 0),
@@ -177,6 +203,10 @@ export function listManualTokenAnalytics(): ManualTokenAnalytics[] {
           COALESCE(SUM(CASE WHEN trades.position_state = 'closed' THEN trades.pnl_usd ELSE 0 END), 0) AS realized_pnl_usd,
           COALESCE(SUM(CASE WHEN trades.position_state = 'active' THEN trades.pnl_usd ELSE 0 END), 0) AS unrealized_pnl_usd,
           COALESCE(SUM(trades.pnl_usd), 0) AS total_pnl_usd,
+          COALESCE(SUM(CASE WHEN trades.pnl_usd > 0 THEN trades.pnl_usd ELSE 0 END), 0) AS profit_pnl_usd,
+          COALESCE(SUM(CASE WHEN trades.pnl_usd < 0 THEN trades.pnl_usd ELSE 0 END), 0) AS loss_pnl_usd,
+          COALESCE(SUM(trades.fee_sol), 0) AS total_fee_sol,
+          COALESCE(SUM(trades.fee_sol), 0) * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0) AS total_fee_usd,
           SUM(CASE WHEN trades.position_state = 'closed' AND trades.pnl_usd > 0 THEN 1 ELSE 0 END) AS win_count,
           SUM(CASE WHEN trades.position_state = 'closed' AND trades.pnl_usd < 0 THEN 1 ELSE 0 END) AS loss_count,
           MIN(trades.opened_at) AS first_trade_at,
@@ -192,6 +222,7 @@ export function listManualTokenAnalytics(): ManualTokenAnalytics[] {
               WHEN entry_price_usd > 0 THEN amount_usd * (current_price_usd / entry_price_usd) - amount_usd
               ELSE 0
             END AS pnl_usd,
+            COALESCE(buy_network_fee_sol, 0) AS fee_sol,
             'active' AS position_state
           FROM active_positions
           WHERE source_trader IN ('manual', 'manual-repeat')
@@ -206,6 +237,7 @@ export function listManualTokenAnalytics(): ManualTokenAnalytics[] {
               WHEN entry_price_usd > 0 THEN amount_usd * (exit_price_usd / entry_price_usd) - amount_usd
               ELSE 0
             END AS pnl_usd,
+            COALESCE(buy_network_fee_sol, 0) + COALESCE(sell_network_fee_sol, 0) AS fee_sol,
             'closed' AS position_state
           FROM closed_positions
           WHERE source_trader IN ('manual', 'manual-repeat')
@@ -237,6 +269,10 @@ export function listManualTokenAnalytics(): ManualTokenAnalytics[] {
       realizedPnlUsd: Number(row.realized_pnl_usd || 0),
       unrealizedPnlUsd: Number(row.unrealized_pnl_usd || 0),
       totalPnlUsd,
+      profitPnlUsd: Number(row.profit_pnl_usd || 0),
+      lossPnlUsd: Number(row.loss_pnl_usd || 0),
+      totalFeeSol: Number(row.total_fee_sol || 0),
+      totalFeeUsd: Number(row.total_fee_usd || 0),
       totalPnlPercent: totalAmountUsd > 0 ? (totalPnlUsd / totalAmountUsd) * 100 : 0,
       winCount,
       lossCount: Number(row.loss_count || 0),

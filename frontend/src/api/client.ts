@@ -34,6 +34,10 @@ type ApiActivePosition = {
   currentPriceUpdatedAt?: string;
   amountUsd: number;
   solSpent?: number;
+  buyNetworkFeeSol?: number;
+  buyPriorityFeeSol?: number;
+  buyQuotedOutAmount?: number;
+  buyActualSolChange?: number;
   tokenAmount: number;
   openedAt: string;
   status: "open" | "selling";
@@ -45,6 +49,10 @@ type ApiClosedPosition = Omit<ApiActivePosition, "currentPriceUsd" | "status"> &
   closedAt: string;
   closeReason: "take-profit" | "manual" | "stop-loss" | "timeout";
   sellTx?: string;
+  sellNetworkFeeSol?: number;
+  sellPriorityFeeSol?: number;
+  sellQuotedOutSol?: number;
+  sellActualSolChange?: number;
 };
 
 export type TokenMetadata = {
@@ -113,6 +121,10 @@ export function mapActivePosition(position: ApiActivePosition): Position {
     priceUpdatedAt: position.currentPriceUpdatedAt,
     amountUsd: position.amountUsd,
     solSpent: position.solSpent,
+    buyNetworkFeeSol: position.buyNetworkFeeSol,
+    buyPriorityFeeSol: position.buyPriorityFeeSol,
+    buyQuotedOutAmount: position.buyQuotedOutAmount,
+    buyActualSolChange: position.buyActualSolChange,
     tokenAmount: position.tokenAmount,
     trader: position.sourceTrader,
     openedAt: position.openedAt
@@ -131,6 +143,10 @@ export function mapClosedPosition(position: ApiClosedPosition): ClosedPosition {
     currentPrice: position.exitPriceUsd,
     amountUsd: position.amountUsd,
     solSpent: position.solSpent,
+    buyNetworkFeeSol: position.buyNetworkFeeSol,
+    buyPriorityFeeSol: position.buyPriorityFeeSol,
+    buyQuotedOutAmount: position.buyQuotedOutAmount,
+    buyActualSolChange: position.buyActualSolChange,
     tokenAmount: position.tokenAmount,
     trader: position.sourceTrader,
     openedAt: position.openedAt,
@@ -138,7 +154,11 @@ export function mapClosedPosition(position: ApiClosedPosition): ClosedPosition {
     exitPlatform: position.exitPlatform,
     closedAt: position.closedAt,
     closeReason: position.closeReason,
-    sellTx: position.sellTx || ""
+    sellTx: position.sellTx || "",
+    sellNetworkFeeSol: position.sellNetworkFeeSol,
+    sellPriorityFeeSol: position.sellPriorityFeeSol,
+    sellQuotedOutSol: position.sellQuotedOutSol,
+    sellActualSolChange: position.sellActualSolChange
   };
 }
 

@@ -42,6 +42,10 @@ db.exec(`
     current_price_updated_at TEXT,
     amount_usd REAL NOT NULL,
     sol_spent REAL,
+    buy_network_fee_sol REAL,
+    buy_priority_fee_sol REAL,
+    buy_quoted_out_amount REAL,
+    buy_actual_sol_change REAL,
     token_amount REAL NOT NULL,
     opened_at TEXT NOT NULL,
     status TEXT NOT NULL,
@@ -60,12 +64,20 @@ db.exec(`
     exit_price_usd REAL NOT NULL,
     amount_usd REAL NOT NULL,
     sol_spent REAL,
+    buy_network_fee_sol REAL,
+    buy_priority_fee_sol REAL,
+    buy_quoted_out_amount REAL,
+    buy_actual_sol_change REAL,
     token_amount REAL NOT NULL,
     opened_at TEXT NOT NULL,
     exit_platform TEXT NOT NULL,
     closed_at TEXT NOT NULL,
     close_reason TEXT NOT NULL,
     sell_tx TEXT,
+    sell_network_fee_sol REAL,
+    sell_priority_fee_sol REAL,
+    sell_quoted_out_sol REAL,
+    sell_actual_sol_change REAL,
     created_at TEXT NOT NULL
   );
 
@@ -141,6 +153,32 @@ if (!activePositionColumns.some((column) => column.name === "current_price_updat
     SET current_price_updated_at = COALESCE(updated_at, opened_at)
     WHERE current_price_updated_at IS NULL;
   `);
+}
+for (const column of [
+  "buy_network_fee_sol",
+  "buy_priority_fee_sol",
+  "buy_quoted_out_amount",
+  "buy_actual_sol_change"
+]) {
+  if (!activePositionColumns.some((activeColumn) => activeColumn.name === column)) {
+    db.exec(`ALTER TABLE active_positions ADD COLUMN ${column} REAL`);
+  }
+}
+
+const closedPositionColumns = db.prepare("PRAGMA table_info(closed_positions)").all() as Array<{ name: string }>;
+for (const column of [
+  "buy_network_fee_sol",
+  "buy_priority_fee_sol",
+  "buy_quoted_out_amount",
+  "buy_actual_sol_change",
+  "sell_network_fee_sol",
+  "sell_priority_fee_sol",
+  "sell_quoted_out_sol",
+  "sell_actual_sol_change"
+]) {
+  if (!closedPositionColumns.some((closedColumn) => closedColumn.name === column)) {
+    db.exec(`ALTER TABLE closed_positions ADD COLUMN ${column} REAL`);
+  }
 }
 
 const logColumns = db.prepare("PRAGMA table_info(bot_logs)").all() as Array<{ name: string }>;

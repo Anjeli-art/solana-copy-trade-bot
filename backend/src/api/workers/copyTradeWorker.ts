@@ -204,6 +204,10 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
         currentPriceUsd: entryPriceUsd,
         amountUsd,
         solSpent: amountSol,
+        buyNetworkFeeSol: result.networkFeeSol,
+        buyPriorityFeeSol: result.priorityFeeSol,
+        buyQuotedOutAmount: result.quotedOutAmount,
+        buyActualSolChange: result.actualSolChange,
         tokenAmount,
         openedAt: new Date().toISOString(),
         status: "open"
@@ -229,7 +233,11 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
         tokenAmount,
         entryPriceUsd,
         sourcePlatform: buy.platform,
-        executionRoute: "Jupiter"
+        executionRoute: "Jupiter",
+        quotedOutAmount: result.quotedOutAmount,
+        networkFeeSol: result.networkFeeSol,
+        priorityFeeSol: result.priorityFeeSol,
+        actualSolChange: result.actualSolChange
       }
     });
     console.log(

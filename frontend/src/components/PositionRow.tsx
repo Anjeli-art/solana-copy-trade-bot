@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import type { ClosedPosition, Position } from "../types";
 import { TokenIcon } from "./TokenIcon";
-import { formatNumber, formatUsd, shortAddress } from "../utils/format";
+import { formatNumber, formatSol, formatUsd, shortAddress } from "../utils/format";
 import { getPnl } from "../utils/positions";
 
 type PositionRowProps = {
@@ -98,6 +98,11 @@ export function ClosedPositionRow({ position }: { position: ClosedPosition }) {
     ...position,
     currentPrice: position.exitPrice
   });
+  const estimatedOutputSol =
+    position.solSpent && position.entryPrice > 0 ? position.solSpent * (position.exitPrice / position.entryPrice) : undefined;
+  const outputSol = position.sellActualSolChange ?? position.sellQuotedOutSol ?? estimatedOutputSol;
+  const solPnl = outputSol !== undefined && position.solSpent !== undefined ? outputSol - position.solSpent : undefined;
+  const feeSol = position.sellNetworkFeeSol;
   const tokenLabel = position.tokenName || position.tokenSymbol;
   const tokenDetails = position.tokenName
     ? `${position.tokenSymbol} • ${shortAddress(position.tokenMint)}`
@@ -135,11 +140,31 @@ export function ClosedPositionRow({ position }: { position: ClosedPosition }) {
         <span>Closed</span>
         <strong>{new Date(position.closedAt).toLocaleDateString()}</strong>
       </div>
-      <div className="platform-stack">
-        <span>{position.platform}</span>
-        <strong>{position.exitPlatform}</strong>
+      <div className={`position-cell sol-result ${solPnl === undefined || solPnl >= 0 ? "positive" : "negative"}`}>
+        <span>Net SOL</span>
+        <strong title={solPnl === undefined ? undefined : `${solPnl >= 0 ? "+" : ""}${formatSol(solPnl)} SOL`}>
+          {solPnl === undefined ? "-" : `${solPnl >= 0 ? "+" : ""}${formatSol(solPnl)}`}
+        </strong>
+        <small
+          title={[
+            outputSol !== undefined ? `${formatSol(outputSol)} SOL out` : undefined,
+            feeSol !== undefined ? `${formatSol(feeSol)} SOL fee` : undefined,
+            position.sellPriorityFeeSol !== undefined ? `${formatSol(position.sellPriorityFeeSol)} SOL priority` : undefined
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        >
+          {outputSol !== undefined ? `${formatSol(outputSol)} out` : ""}
+          {feeSol !== undefined ? ` · fee ${formatSol(feeSol)}` : ""}
+        </small>
       </div>
-      <div className={`reason-pill ${position.closeReason}`}>{position.closeReason}</div>
+      <div className="close-meta">
+        <div className="platform-stack">
+          <span>{position.platform}</span>
+          <strong>{position.exitPlatform}</strong>
+        </div>
+        <div className={`reason-pill ${position.closeReason}`}>{position.closeReason}</div>
+      </div>
     </article>
   );
 }

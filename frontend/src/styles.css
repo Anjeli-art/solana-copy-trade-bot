@@ -54,7 +54,9 @@ body {
   background: transparent;
   color: #b7c5bd;
   cursor: pointer;
+  font: inherit;
   text-align: left;
+  text-decoration: none;
 }
 
 .nav-item.active,
@@ -693,6 +695,13 @@ select {
   padding: 14px;
 }
 
+.analytics-mode-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .analytics-mode-tabs {
   display: inline-grid;
   grid-template-columns: repeat(2, minmax(96px, 1fr));
@@ -727,13 +736,30 @@ select {
   font-weight: 850;
 }
 
+.analytics-summary-breakdown {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  max-width: 260px;
+  color: #66746c;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.analytics-summary-breakdown small {
+  white-space: nowrap;
+}
+
 .analytics-summary span.positive,
+.analytics-summary-breakdown .positive,
 .analytics-cell.positive strong,
 .analytics-cell.positive span {
   color: #1d6845;
 }
 
 .analytics-summary span.negative,
+.analytics-summary-breakdown .negative,
 .analytics-cell.negative strong,
 .analytics-cell.negative span {
   color: #9b2c20;
@@ -836,6 +862,19 @@ select {
   background: #fbfcfa;
 }
 
+.position-row.closed {
+  grid-template-columns:
+    40px
+    minmax(104px, 1.05fr)
+    minmax(62px, 0.5fr)
+    minmax(62px, 0.5fr)
+    minmax(70px, 0.56fr)
+    minmax(70px, 0.52fr)
+    minmax(116px, 0.88fr)
+    218px;
+  gap: 10px;
+}
+
 .token-icon {
   display: grid;
   place-items: center;
@@ -894,10 +933,11 @@ select {
 }
 
 .position-cell span,
+.position-cell small,
 .position-pnl span {
   overflow: hidden;
   color: #66746c;
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1046,6 +1086,16 @@ select {
   color: #9b2c20;
 }
 
+.position-cell.sol-result.positive strong,
+.position-cell.sol-result.positive small {
+  color: #1d6845;
+}
+
+.position-cell.sol-result.negative strong,
+.position-cell.sol-result.negative small {
+  color: #9b2c20;
+}
+
 .platform-pill {
   min-width: 0;
   padding: 6px 9px;
@@ -1067,6 +1117,32 @@ select {
   padding: 6px 9px;
   border-radius: 8px;
   background: #eef2f5;
+}
+
+.close-meta {
+  display: grid;
+  grid-template-columns: 104px max-content;
+  align-items: center;
+  justify-content: end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.close-meta .platform-stack,
+.close-meta .reason-pill {
+  min-width: 0;
+}
+
+.close-meta .platform-stack {
+  width: 104px;
+  min-height: 44px;
+}
+
+.close-meta .reason-pill {
+  width: 96px;
+  min-width: 96px;
+  min-height: 24px;
+  padding: 4px 10px;
 }
 
 .platform-stack span {
@@ -1839,6 +1915,7 @@ select {
   .position-pnl,
   .platform-pill,
   .platform-stack,
+  .close-meta,
   .reason-pill,
   .sell-button {
     grid-column: 2 / 4;

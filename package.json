@@ -16,7 +16,8 @@
     "dev": "concurrently \"npm run api\" \"npm run frontend\"",
     "typecheck:api": "npm run typecheck:api -w backend",
     "build:frontend": "npm run build -w frontend",
-    "test": "npm run test -w backend"
+    "test:frontend": "npm run test -w frontend",
+    "test": "npm run test -w backend && npm run test -w frontend"
   },
   "keywords": [],
   "author": "Anjeli-art",

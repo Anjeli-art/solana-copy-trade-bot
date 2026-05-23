@@ -40,6 +40,10 @@ type DbActivePosition = {
   current_price_updated_at: string | null;
   amount_usd: number;
   sol_spent: number | null;
+  buy_network_fee_sol: number | null;
+  buy_priority_fee_sol: number | null;
+  buy_quoted_out_amount: number | null;
+  buy_actual_sol_change: number | null;
   token_amount: number;
   opened_at: string;
   status: string;
@@ -59,12 +63,20 @@ type DbClosedPosition = {
   exit_price_usd: number;
   amount_usd: number;
   sol_spent: number | null;
+  buy_network_fee_sol: number | null;
+  buy_priority_fee_sol: number | null;
+  buy_quoted_out_amount: number | null;
+  buy_actual_sol_change: number | null;
   token_amount: number;
   opened_at: string;
   exit_platform: string;
   closed_at: string;
   close_reason: string;
   sell_tx: string | null;
+  sell_network_fee_sol: number | null;
+  sell_priority_fee_sol: number | null;
+  sell_quoted_out_sol: number | null;
+  sell_actual_sol_change: number | null;
 };
 
 type DbSettings = {
@@ -166,6 +178,10 @@ function toActivePosition(row: DbActivePosition): ActivePosition {
     currentPriceUpdatedAt: row.current_price_updated_at || row.opened_at,
     amountUsd: row.amount_usd,
     solSpent: row.sol_spent ?? undefined,
+    buyNetworkFeeSol: row.buy_network_fee_sol ?? undefined,
+    buyPriorityFeeSol: row.buy_priority_fee_sol ?? undefined,
+    buyQuotedOutAmount: row.buy_quoted_out_amount ?? undefined,
+    buyActualSolChange: row.buy_actual_sol_change ?? undefined,
     tokenAmount: row.token_amount,
     openedAt: row.opened_at,
     status: row.status === "selling" ? "selling" : "open"
@@ -190,12 +206,20 @@ function toClosedPosition(row: DbClosedPosition): ClosedPosition {
     exitPriceUsd: row.exit_price_usd,
     amountUsd: row.amount_usd,
     solSpent: row.sol_spent ?? undefined,
+    buyNetworkFeeSol: row.buy_network_fee_sol ?? undefined,
+    buyPriorityFeeSol: row.buy_priority_fee_sol ?? undefined,
+    buyQuotedOutAmount: row.buy_quoted_out_amount ?? undefined,
+    buyActualSolChange: row.buy_actual_sol_change ?? undefined,
     tokenAmount: row.token_amount,
     openedAt: row.opened_at,
     exitPlatform: toPlatformName(row.exit_platform),
     closedAt: row.closed_at,
     closeReason: closeReason as ClosedPosition["closeReason"],
-    sellTx: row.sell_tx || undefined
+    sellTx: row.sell_tx || undefined,
+    sellNetworkFeeSol: row.sell_network_fee_sol ?? undefined,
+    sellPriorityFeeSol: row.sell_priority_fee_sol ?? undefined,
+    sellQuotedOutSol: row.sell_quoted_out_sol ?? undefined,
+    sellActualSolChange: row.sell_actual_sol_change ?? undefined
   };
 }
 
@@ -578,10 +602,11 @@ function insertActivePosition(position: ActivePosition, savedAt: string) {
     `
       INSERT INTO active_positions (
         id, token_symbol, token_mint, source_trader, buy_platform, buy_tx, entry_price_usd,
-        current_price_usd, current_price_updated_at, amount_usd, sol_spent, token_amount, opened_at, status,
+        current_price_usd, current_price_updated_at, amount_usd, sol_spent, buy_network_fee_sol,
+        buy_priority_fee_sol, buy_quoted_out_amount, buy_actual_sol_change, token_amount, opened_at, status,
         created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         token_symbol = excluded.token_symbol,
         token_mint = excluded.token_mint,
@@ -593,6 +618,10 @@ function insertActivePosition(position: ActivePosition, savedAt: string) {
         current_price_updated_at = excluded.current_price_updated_at,
         amount_usd = excluded.amount_usd,
         sol_spent = excluded.sol_spent,
+        buy_network_fee_sol = excluded.buy_network_fee_sol,
+        buy_priority_fee_sol = excluded.buy_priority_fee_sol,
+        buy_quoted_out_amount = excluded.buy_quoted_out_amount,
+        buy_actual_sol_change = excluded.buy_actual_sol_change,
         token_amount = excluded.token_amount,
         opened_at = excluded.opened_at,
         status = excluded.status,
@@ -610,6 +639,10 @@ function insertActivePosition(position: ActivePosition, savedAt: string) {
     position.currentPriceUpdatedAt || savedAt,
     position.amountUsd,
     position.solSpent ?? null,
+    position.buyNetworkFeeSol ?? null,
+    position.buyPriorityFeeSol ?? null,
+    position.buyQuotedOutAmount ?? null,
+    position.buyActualSolChange ?? null,
     position.tokenAmount,
     position.openedAt,
     position.status,
@@ -623,10 +656,12 @@ function insertClosedPosition(position: ClosedPosition, savedAt: string) {
     `
       INSERT INTO closed_positions (
         id, token_symbol, token_mint, source_trader, buy_platform, buy_tx, entry_price_usd,
-        exit_price_usd, amount_usd, sol_spent, token_amount, opened_at, exit_platform,
-        closed_at, close_reason, sell_tx, created_at
+        exit_price_usd, amount_usd, sol_spent, buy_network_fee_sol, buy_priority_fee_sol,
+        buy_quoted_out_amount, buy_actual_sol_change, token_amount, opened_at, exit_platform,
+        closed_at, close_reason, sell_tx, sell_network_fee_sol, sell_priority_fee_sol,
+        sell_quoted_out_sol, sell_actual_sol_change, created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         token_symbol = excluded.token_symbol,
         token_mint = excluded.token_mint,
@@ -637,12 +672,20 @@ function insertClosedPosition(position: ClosedPosition, savedAt: string) {
         exit_price_usd = excluded.exit_price_usd,
         amount_usd = excluded.amount_usd,
         sol_spent = excluded.sol_spent,
+        buy_network_fee_sol = excluded.buy_network_fee_sol,
+        buy_priority_fee_sol = excluded.buy_priority_fee_sol,
+        buy_quoted_out_amount = excluded.buy_quoted_out_amount,
+        buy_actual_sol_change = excluded.buy_actual_sol_change,
         token_amount = excluded.token_amount,
         opened_at = excluded.opened_at,
         exit_platform = excluded.exit_platform,
         closed_at = excluded.closed_at,
         close_reason = excluded.close_reason,
-        sell_tx = excluded.sell_tx
+        sell_tx = excluded.sell_tx,
+        sell_network_fee_sol = excluded.sell_network_fee_sol,
+        sell_priority_fee_sol = excluded.sell_priority_fee_sol,
+        sell_quoted_out_sol = excluded.sell_quoted_out_sol,
+        sell_actual_sol_change = excluded.sell_actual_sol_change
     `
   ).run(
     position.id,
@@ -655,12 +698,20 @@ function insertClosedPosition(position: ClosedPosition, savedAt: string) {
     position.exitPriceUsd,
     position.amountUsd,
     position.solSpent ?? null,
+    position.buyNetworkFeeSol ?? null,
+    position.buyPriorityFeeSol ?? null,
+    position.buyQuotedOutAmount ?? null,
+    position.buyActualSolChange ?? null,
     position.tokenAmount,
     position.openedAt,
     position.exitPlatform,
     position.closedAt,
     position.closeReason,
     position.sellTx || null,
+    position.sellNetworkFeeSol ?? null,
+    position.sellPriorityFeeSol ?? null,
+    position.sellQuotedOutSol ?? null,
+    position.sellActualSolChange ?? null,
     savedAt
   );
 }

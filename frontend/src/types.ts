@@ -29,6 +29,10 @@ export type Position = {
   priceUpdatedAt?: string;
   amountUsd: number;
   solSpent?: number;
+  buyNetworkFeeSol?: number;
+  buyPriorityFeeSol?: number;
+  buyQuotedOutAmount?: number;
+  buyActualSolChange?: number;
   tokenAmount: number;
   trader: string;
   openedAt: string;
@@ -40,6 +44,10 @@ export type ClosedPosition = Position & {
   closedAt: string;
   closeReason: "take-profit" | "manual" | "stop-loss" | "timeout";
   sellTx: string;
+  sellNetworkFeeSol?: number;
+  sellPriorityFeeSol?: number;
+  sellQuotedOutSol?: number;
+  sellActualSolChange?: number;
 };
 
 export type ManualRepeatToken = {
@@ -77,6 +85,10 @@ export type TraderAnalytics = {
   realizedPnlUsd: number;
   unrealizedPnlUsd: number;
   totalPnlUsd: number;
+  profitPnlUsd: number;
+  lossPnlUsd: number;
+  totalFeeSol: number;
+  totalFeeUsd: number;
   totalPnlPercent: number;
   winCount: number;
   lossCount: number;
@@ -99,6 +111,10 @@ export type ManualTokenAnalytics = {
   realizedPnlUsd: number;
   unrealizedPnlUsd: number;
   totalPnlUsd: number;
+  profitPnlUsd: number;
+  lossPnlUsd: number;
+  totalFeeSol: number;
+  totalFeeUsd: number;
   totalPnlPercent: number;
   winCount: number;
   lossCount: number;

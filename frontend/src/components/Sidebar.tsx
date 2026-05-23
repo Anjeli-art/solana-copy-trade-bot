@@ -1,12 +1,31 @@
+import type { MouseEvent } from "react";
 import { Activity, BarChart3, Bot, ClipboardList, Radio, Wallet } from "lucide-react";
 import type { View } from "../types";
+import { getRouteForView } from "../utils/routes";
 
 type SidebarProps = {
   activeView: View;
   onViewChange: (view: View) => void;
 };
 
+const navItems = [
+  { view: "dashboard", label: "Dashboard", icon: Activity },
+  { view: "positions", label: "Positions", icon: Wallet },
+  { view: "traders", label: "Traders", icon: Radio },
+  { view: "analytics", label: "Analytics", icon: BarChart3 },
+  { view: "logs", label: "Logs", icon: ClipboardList }
+] satisfies Array<{ view: View; label: string; icon: typeof Activity }>;
+
 export function Sidebar({ activeView, onViewChange }: SidebarProps) {
+  function handleNavClick(event: MouseEvent<HTMLAnchorElement>, view: View) {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+
+    event.preventDefault();
+    onViewChange(view);
+  }
+
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -14,46 +33,18 @@ export function Sidebar({ activeView, onViewChange }: SidebarProps) {
         <span>Copy Bot</span>
       </div>
       <nav className="nav-list">
-        <button
-          className={`nav-item ${activeView === "dashboard" ? "active" : ""}`}
-          type="button"
-          onClick={() => onViewChange("dashboard")}
-        >
-          <Activity size={18} />
-          Dashboard
-        </button>
-        <button
-          className={`nav-item ${activeView === "positions" ? "active" : ""}`}
-          type="button"
-          onClick={() => onViewChange("positions")}
-        >
-          <Wallet size={18} />
-          Positions
-        </button>
-        <button
-          className={`nav-item ${activeView === "traders" ? "active" : ""}`}
-          type="button"
-          onClick={() => onViewChange("traders")}
-        >
-          <Radio size={18} />
-          Traders
-        </button>
-        <button
-          className={`nav-item ${activeView === "analytics" ? "active" : ""}`}
-          type="button"
-          onClick={() => onViewChange("analytics")}
-        >
-          <BarChart3 size={18} />
-          Analytics
-        </button>
-        <button
-          className={`nav-item ${activeView === "logs" ? "active" : ""}`}
-          type="button"
-          onClick={() => onViewChange("logs")}
-        >
-          <ClipboardList size={18} />
-          Logs
-        </button>
+        {navItems.map(({ view, label, icon: Icon }) => (
+          <a
+            aria-current={activeView === view ? "page" : undefined}
+            className={`nav-item ${activeView === view ? "active" : ""}`}
+            href={getRouteForView(view)}
+            key={view}
+            onClick={(event) => handleNavClick(event, view)}
+          >
+            <Icon size={18} />
+            {label}
+          </a>
+        ))}
       </nav>
     </aside>
   );

@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { BarChart3, Wallet } from "lucide-react";
+import { BarChart3, Download, Wallet } from "lucide-react";
 import type { ManualTokenAnalytics, TraderAnalytics } from "../types";
+import { exportAnalyticsToExcel } from "../utils/analyticsExport";
 import { formatNumber, formatSol, formatUsd, shortAddress } from "../utils/format";
 
 type AnalyticsViewProps = {
@@ -20,14 +21,24 @@ function formatSignedPercent(value: number) {
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
+function formatFeeUsd(value: number) {
+  return `-${formatUsd(Math.abs(value))}`;
+}
+
 export function AnalyticsView({ traders, manualTokens }: AnalyticsViewProps) {
   const [mode, setMode] = useState<"trading" | "manual">("trading");
   const totalAmountUsd = traders.reduce((sum, trader) => sum + trader.totalAmountUsd, 0);
   const totalPnlUsd = traders.reduce((sum, trader) => sum + trader.totalPnlUsd, 0);
+  const totalProfitPnlUsd = traders.reduce((sum, trader) => sum + (trader.profitPnlUsd ?? Math.max(trader.totalPnlUsd, 0)), 0);
+  const totalLossPnlUsd = traders.reduce((sum, trader) => sum + (trader.lossPnlUsd ?? Math.min(trader.totalPnlUsd, 0)), 0);
+  const totalFeeUsd = traders.reduce((sum, trader) => sum + (trader.totalFeeUsd ?? 0), 0);
   const totalPnlPercent = totalAmountUsd > 0 ? (totalPnlUsd / totalAmountUsd) * 100 : 0;
   const totalTrades = traders.reduce((sum, trader) => sum + trader.tradeCount, 0);
   const manualAmountUsd = manualTokens.reduce((sum, token) => sum + token.totalAmountUsd, 0);
   const manualPnlUsd = manualTokens.reduce((sum, token) => sum + token.totalPnlUsd, 0);
+  const manualProfitPnlUsd = manualTokens.reduce((sum, token) => sum + (token.profitPnlUsd ?? Math.max(token.totalPnlUsd, 0)), 0);
+  const manualLossPnlUsd = manualTokens.reduce((sum, token) => sum + (token.lossPnlUsd ?? Math.min(token.totalPnlUsd, 0)), 0);
+  const manualFeeUsd = manualTokens.reduce((sum, token) => sum + (token.totalFeeUsd ?? 0), 0);
   const manualPnlPercent = manualAmountUsd > 0 ? (manualPnlUsd / manualAmountUsd) * 100 : 0;
   const manualTrades = manualTokens.reduce((sum, token) => sum + token.tradeCount, 0);
 
@@ -39,21 +50,31 @@ export function AnalyticsView({ traders, manualTokens }: AnalyticsViewProps) {
             <p className="eyebrow">Analytics</p>
             <h2>{mode === "trading" ? "Trading analytics" : "Manual analytics"}</h2>
           </div>
-          <div className="analytics-mode-tabs" role="tablist" aria-label="Analytics view">
+          <div className="analytics-mode-actions">
             <button
-              className={mode === "trading" ? "active" : ""}
+              className="export-button"
               type="button"
-              onClick={() => setMode("trading")}
+              onClick={() => exportAnalyticsToExcel(traders, manualTokens, mode)}
             >
-              Trading
+              <Download size={17} />
+              Export
             </button>
-            <button
-              className={mode === "manual" ? "active" : ""}
-              type="button"
-              onClick={() => setMode("manual")}
-            >
-              Manual
-            </button>
+            <div className="analytics-mode-tabs" role="tablist" aria-label="Analytics view">
+              <button
+                className={mode === "trading" ? "active" : ""}
+                type="button"
+                onClick={() => setMode("trading")}
+              >
+                Trading
+              </button>
+              <button
+                className={mode === "manual" ? "active" : ""}
+                type="button"
+                onClick={() => setMode("manual")}
+              >
+                Manual
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -67,6 +88,11 @@ export function AnalyticsView({ traders, manualTokens }: AnalyticsViewProps) {
           </div>
           <div className="analytics-summary">
             <span className={totalPnlUsd >= 0 ? "positive" : "negative"}>{formatSignedUsd(totalPnlUsd)}</span>
+            <div className="analytics-summary-breakdown">
+              <small className="positive">{formatSignedUsd(totalProfitPnlUsd)}</small>
+              <small className="negative">{formatUsd(totalLossPnlUsd)}</small>
+              <small className="negative">fees {formatFeeUsd(totalFeeUsd)}</small>
+            </div>
             <strong>{formatSignedPercent(totalPnlPercent)} / {formatNumber(totalTrades)} trades</strong>
           </div>
         </div>
@@ -142,6 +168,11 @@ export function AnalyticsView({ traders, manualTokens }: AnalyticsViewProps) {
           </div>
           <div className="analytics-summary">
             <span className={manualPnlUsd >= 0 ? "positive" : "negative"}>{formatSignedUsd(manualPnlUsd)}</span>
+            <div className="analytics-summary-breakdown">
+              <small className="positive">{formatSignedUsd(manualProfitPnlUsd)}</small>
+              <small className="negative">{formatUsd(manualLossPnlUsd)}</small>
+              <small className="negative">fees {formatFeeUsd(manualFeeUsd)}</small>
+            </div>
             <strong>{formatSignedPercent(manualPnlPercent)} / {formatNumber(manualTrades)} trades</strong>
           </div>
         </div>

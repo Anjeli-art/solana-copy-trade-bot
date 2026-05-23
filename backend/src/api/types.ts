@@ -28,6 +28,10 @@ export type ActivePosition = {
   currentPriceUpdatedAt?: string;
   amountUsd: number;
   solSpent?: number;
+  buyNetworkFeeSol?: number;
+  buyPriorityFeeSol?: number;
+  buyQuotedOutAmount?: number;
+  buyActualSolChange?: number;
   tokenAmount: number;
   openedAt: string;
   status: "open" | "selling";
@@ -41,6 +45,10 @@ export type ClosedPosition = Omit<ActivePosition, "status" | "currentPriceUsd"> 
   closedAt: string;
   closeReason: CloseReason;
   sellTx?: string;
+  sellNetworkFeeSol?: number;
+  sellPriorityFeeSol?: number;
+  sellQuotedOutSol?: number;
+  sellActualSolChange?: number;
 };
 
 export type BotWalletSnapshot = {
