@@ -37,6 +37,22 @@ Runtime processes:
 - Copy worker: polls enabled trader wallets and creates copied buy positions.
 - Profit watcher: polls open positions and sells when exit rules trigger.
 
+```mermaid
+flowchart LR
+  subgraph monitor [Copy Worker]
+    RPC[HTTP RPC polling] --> Detect[platformDetector]
+    Detect --> Buy[Jupiter Buy]
+  end
+  subgraph exit [Profit Watcher x2]
+    Quote[Jupiter Quote] --> Rules[positionRules]
+    Rules --> Sell[Jupiter Sell]
+  end
+  UI[React Dashboard] --> API[Express API]
+  API --> SQLite[(SQLite)]
+  Buy --> SQLite
+  Sell --> SQLite
+```
+
 The API starts workers as child processes when the dashboard buttons are used.
 
 ## Trading Controls
