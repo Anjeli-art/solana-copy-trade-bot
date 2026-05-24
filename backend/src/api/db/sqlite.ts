@@ -16,6 +16,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS bot_settings (
     id TEXT PRIMARY KEY,
     profit_target_multiplier REAL NOT NULL,
+    high_profit_target_multiplier REAL NOT NULL DEFAULT 1.05,
     stop_loss_multiplier REAL NOT NULL DEFAULT 0.7,
     position_timeout_minutes REAL NOT NULL DEFAULT 120,
     buy_amount_sol REAL NOT NULL,
@@ -49,6 +50,7 @@ db.exec(`
     token_amount REAL NOT NULL,
     opened_at TEXT NOT NULL,
     status TEXT NOT NULL,
+    profit_tier TEXT NOT NULL DEFAULT 'low',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -73,6 +75,7 @@ db.exec(`
     exit_platform TEXT NOT NULL,
     closed_at TEXT NOT NULL,
     close_reason TEXT NOT NULL,
+    profit_tier TEXT NOT NULL DEFAULT 'low',
     sell_tx TEXT,
     sell_network_fee_sol REAL,
     sell_priority_fee_sol REAL,
@@ -134,12 +137,22 @@ db.exec(`
     updated_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS blacklisted_tokens (
+    token_mint TEXT PRIMARY KEY,
+    reason TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_bot_logs_created_at ON bot_logs (created_at DESC);
 `);
 
 const settingsColumns = db.prepare("PRAGMA table_info(bot_settings)").all() as Array<{ name: string }>;
 if (!settingsColumns.some((column) => column.name === "stop_loss_multiplier")) {
   db.exec("ALTER TABLE bot_settings ADD COLUMN stop_loss_multiplier REAL NOT NULL DEFAULT 0.7");
+}
+if (!settingsColumns.some((column) => column.name === "high_profit_target_multiplier")) {
+  db.exec("ALTER TABLE bot_settings ADD COLUMN high_profit_target_multiplier REAL NOT NULL DEFAULT 1.05");
 }
 if (!settingsColumns.some((column) => column.name === "position_timeout_minutes")) {
   db.exec("ALTER TABLE bot_settings ADD COLUMN position_timeout_minutes REAL NOT NULL DEFAULT 120");
@@ -164,6 +177,9 @@ for (const column of [
     db.exec(`ALTER TABLE active_positions ADD COLUMN ${column} REAL`);
   }
 }
+if (!activePositionColumns.some((column) => column.name === "profit_tier")) {
+  db.exec("ALTER TABLE active_positions ADD COLUMN profit_tier TEXT NOT NULL DEFAULT 'low'");
+}
 
 const closedPositionColumns = db.prepare("PRAGMA table_info(closed_positions)").all() as Array<{ name: string }>;
 for (const column of [
@@ -179,6 +195,9 @@ for (const column of [
   if (!closedPositionColumns.some((closedColumn) => closedColumn.name === column)) {
     db.exec(`ALTER TABLE closed_positions ADD COLUMN ${column} REAL`);
   }
+}
+if (!closedPositionColumns.some((column) => column.name === "profit_tier")) {
+  db.exec("ALTER TABLE closed_positions ADD COLUMN profit_tier TEXT NOT NULL DEFAULT 'low'");
 }
 
 const logColumns = db.prepare("PRAGMA table_info(bot_logs)").all() as Array<{ name: string }>;

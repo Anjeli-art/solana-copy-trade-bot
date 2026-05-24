@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Check, ChevronDown, Copy, RefreshCw, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Copy, RefreshCw, Trash2 } from "lucide-react";
 import type { BotLog } from "../types";
 import { CalendarInput } from "../components/CalendarInput";
 import { TimeInput } from "../components/TimeInput";
@@ -14,6 +14,26 @@ type LogsViewProps = {
   onDeleteLog: (id: string) => void;
   onRefresh: () => void;
 };
+
+const PAGE_SIZE_OPTIONS = [5, 10, 50];
+
+function readStoredPageSize(key: string, fallback: number) {
+  if (typeof window === "undefined") return fallback;
+  const value = Number(window.localStorage.getItem(key));
+  return PAGE_SIZE_OPTIONS.includes(value) ? value : fallback;
+}
+
+function readStoredPage(key: string) {
+  if (typeof window === "undefined") return 1;
+  const value = Number(window.localStorage.getItem(key));
+  return Number.isInteger(value) && value > 0 ? value : 1;
+}
+
+function storeNumber(key: string, value: number) {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(key, String(value));
+  }
+}
 
 function toDateInputValue(date: Date) {
   const year = date.getFullYear();
@@ -58,6 +78,9 @@ export function LogsView({
   const [toDate, setToDate] = useState(() => toDateInputValue(new Date()));
   const [fromTime, setFromTime] = useState("");
   const [toTime, setToTime] = useState("");
+  const [logsPageSize, setLogsPageSize] = useState(() => readStoredPageSize("logs.pageSize", 10));
+  const [logsPage, setLogsPage] = useState(() => readStoredPage("logs.page"));
+  const didMountLogsPagination = useRef(false);
 
   const filteredLogs = useMemo(() => {
     const from = getLogTimestamp(fromDate, fromTime);
@@ -70,6 +93,34 @@ export function LogsView({
       return true;
     });
   }, [fromDate, fromTime, logs, toDate, toTime]);
+
+  const logsPageCount = Math.max(1, Math.ceil(filteredLogs.length / logsPageSize));
+  const activeLogsPage = Math.min(logsPage, logsPageCount);
+  const paginatedLogs = filteredLogs.slice(
+    (activeLogsPage - 1) * logsPageSize,
+    activeLogsPage * logsPageSize
+  );
+
+  useEffect(() => {
+    storeNumber("logs.pageSize", logsPageSize);
+  }, [logsPageSize]);
+
+  useEffect(() => {
+    storeNumber("logs.page", logsPage);
+  }, [logsPage]);
+
+  useEffect(() => {
+    if (!didMountLogsPagination.current) {
+      didMountLogsPagination.current = true;
+      return;
+    }
+    setLogsPage(1);
+    setExpandedLogId(null);
+  }, [eventFilter, fromDate, fromTime, logsPageSize, toDate, toTime]);
+
+  useEffect(() => {
+    setLogsPage((page) => Math.min(Math.max(1, page), logsPageCount));
+  }, [logsPageCount]);
 
   async function copyLogValue(fieldId: string, value?: string) {
     if (!value) {
@@ -128,7 +179,7 @@ export function LogsView({
         {filteredLogs.length === 0 ? (
           <div className="empty-state">No logs yet</div>
         ) : (
-          filteredLogs.map((log) => (
+          paginatedLogs.map((log) => (
             <div className={`log-entry ${expandedLogId === log.id ? "expanded" : ""}`} key={log.id}>
               <button
                 className="logs-row"
@@ -186,6 +237,46 @@ export function LogsView({
           ))
         )}
       </div>
+      {filteredLogs.length > 0 ? (
+        <div className="table-pagination" aria-label="Logs pagination">
+          <label className="select-wrap page-size-wrap pagination-page-size">
+            <span>Rows</span>
+            <select
+              aria-label="Logs rows per page"
+              value={logsPageSize}
+              onChange={(event) => setLogsPageSize(Number(event.target.value))}
+            >
+              <option value={5}>5</option>
+              <option value={10}>10</option>
+              <option value={50}>50</option>
+            </select>
+          </label>
+          <span className="pagination-range">
+            {(activeLogsPage - 1) * logsPageSize + 1}-
+            {Math.min(activeLogsPage * logsPageSize, filteredLogs.length)} of{" "}
+            {filteredLogs.length}
+          </span>
+          <div className="closed-page-buttons">
+            <button
+              type="button"
+              aria-label="Previous logs page"
+              disabled={activeLogsPage <= 1}
+              onClick={() => setLogsPage((page) => Math.max(1, page - 1))}
+            >
+              <ChevronLeft size={16} />
+            </button>
+            <strong>{activeLogsPage} / {logsPageCount}</strong>
+            <button
+              type="button"
+              aria-label="Next logs page"
+              disabled={activeLogsPage >= logsPageCount}
+              onClick={() => setLogsPage((page) => Math.min(logsPageCount, page + 1))}
+            >
+              <ChevronRight size={16} />
+            </button>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

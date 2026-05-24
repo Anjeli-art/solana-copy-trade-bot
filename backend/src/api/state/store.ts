@@ -47,6 +47,7 @@ type DbActivePosition = {
   token_amount: number;
   opened_at: string;
   status: string;
+  profit_tier: string | null;
 };
 
 type DbClosedPosition = {
@@ -72,6 +73,7 @@ type DbClosedPosition = {
   exit_platform: string;
   closed_at: string;
   close_reason: string;
+  profit_tier: string | null;
   sell_tx: string | null;
   sell_network_fee_sol: number | null;
   sell_priority_fee_sol: number | null;
@@ -81,6 +83,7 @@ type DbClosedPosition = {
 
 type DbSettings = {
   profit_target_multiplier: number;
+  high_profit_target_multiplier?: number;
   stop_loss_multiplier?: number;
   position_timeout_minutes?: number;
   buy_amount_sol: number;
@@ -163,6 +166,10 @@ function toPlatformName(value: string): PlatformName {
   return "Raydium";
 }
 
+function toProfitTier(value?: string | null): ActivePosition["profitTier"] {
+  return value === "high" ? "high" : "low";
+}
+
 function toActivePosition(row: DbActivePosition): ActivePosition {
   return {
     id: row.id,
@@ -184,7 +191,8 @@ function toActivePosition(row: DbActivePosition): ActivePosition {
     buyActualSolChange: row.buy_actual_sol_change ?? undefined,
     tokenAmount: row.token_amount,
     openedAt: row.opened_at,
-    status: row.status === "selling" ? "selling" : "open"
+    status: row.status === "selling" ? "selling" : "open",
+    profitTier: toProfitTier(row.profit_tier)
   };
 }
 
@@ -212,6 +220,7 @@ function toClosedPosition(row: DbClosedPosition): ClosedPosition {
     buyActualSolChange: row.buy_actual_sol_change ?? undefined,
     tokenAmount: row.token_amount,
     openedAt: row.opened_at,
+    profitTier: toProfitTier(row.profit_tier),
     exitPlatform: toPlatformName(row.exit_platform),
     closedAt: row.closed_at,
     closeReason: closeReason as ClosedPosition["closeReason"],
@@ -253,7 +262,7 @@ export async function readState(): Promise<ApiState> {
 
   const settings = db
     .prepare(
-      "SELECT profit_target_multiplier, stop_loss_multiplier, position_timeout_minutes, buy_amount_sol FROM bot_settings WHERE id = ?"
+      "SELECT profit_target_multiplier, high_profit_target_multiplier, stop_loss_multiplier, position_timeout_minutes, buy_amount_sol FROM bot_settings WHERE id = ?"
     )
     .get("default") as DbSettings | undefined;
   const wallet = db
@@ -298,6 +307,8 @@ export async function readState(): Promise<ApiState> {
     settings: settings
       ? {
           profitTargetMultiplier: settings.profit_target_multiplier,
+          highProfitTargetMultiplier:
+            settings.high_profit_target_multiplier ?? defaultState.settings.highProfitTargetMultiplier,
           stopLossMultiplier: settings.stop_loss_multiplier ?? defaultState.settings.stopLossMultiplier,
           positionTimeoutMinutes:
             settings.position_timeout_minutes ?? defaultState.settings.positionTimeoutMinutes,
@@ -328,11 +339,12 @@ export async function writeState(state: ApiState): Promise<ApiState> {
     db.prepare(
       `
         INSERT INTO bot_settings (
-          id, profit_target_multiplier, stop_loss_multiplier, position_timeout_minutes, buy_amount_sol, updated_at
+          id, profit_target_multiplier, high_profit_target_multiplier, stop_loss_multiplier, position_timeout_minutes, buy_amount_sol, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           profit_target_multiplier = excluded.profit_target_multiplier,
+          high_profit_target_multiplier = excluded.high_profit_target_multiplier,
           stop_loss_multiplier = excluded.stop_loss_multiplier,
           position_timeout_minutes = excluded.position_timeout_minutes,
           buy_amount_sol = excluded.buy_amount_sol,
@@ -341,6 +353,7 @@ export async function writeState(state: ApiState): Promise<ApiState> {
     ).run(
       "default",
       nextState.settings.profitTargetMultiplier,
+      nextState.settings.highProfitTargetMultiplier,
       nextState.settings.stopLossMultiplier,
       nextState.settings.positionTimeoutMinutes,
       nextState.settings.buyAmountSol,
@@ -411,11 +424,12 @@ export async function updateState(updater: (state: ApiState) => ApiState | Promi
     db.prepare(
       `
         INSERT INTO bot_settings (
-          id, profit_target_multiplier, stop_loss_multiplier, position_timeout_minutes, buy_amount_sol, updated_at
+        id, profit_target_multiplier, high_profit_target_multiplier, stop_loss_multiplier, position_timeout_minutes, buy_amount_sol, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           profit_target_multiplier = excluded.profit_target_multiplier,
+          high_profit_target_multiplier = excluded.high_profit_target_multiplier,
           stop_loss_multiplier = excluded.stop_loss_multiplier,
           position_timeout_minutes = excluded.position_timeout_minutes,
           buy_amount_sol = excluded.buy_amount_sol,
@@ -424,6 +438,7 @@ export async function updateState(updater: (state: ApiState) => ApiState | Promi
     ).run(
       "default",
       nextState.settings.profitTargetMultiplier,
+      nextState.settings.highProfitTargetMultiplier,
       nextState.settings.stopLossMultiplier,
       nextState.settings.positionTimeoutMinutes,
       nextState.settings.buyAmountSol,
@@ -502,11 +517,12 @@ export async function saveSettings(settings: BotSettings) {
   db.prepare(
     `
       INSERT INTO bot_settings (
-        id, profit_target_multiplier, stop_loss_multiplier, position_timeout_minutes, buy_amount_sol, updated_at
+        id, profit_target_multiplier, high_profit_target_multiplier, stop_loss_multiplier, position_timeout_minutes, buy_amount_sol, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         profit_target_multiplier = excluded.profit_target_multiplier,
+        high_profit_target_multiplier = excluded.high_profit_target_multiplier,
         stop_loss_multiplier = excluded.stop_loss_multiplier,
         position_timeout_minutes = excluded.position_timeout_minutes,
         buy_amount_sol = excluded.buy_amount_sol,
@@ -515,6 +531,7 @@ export async function saveSettings(settings: BotSettings) {
   ).run(
     "default",
     settings.profitTargetMultiplier,
+    settings.highProfitTargetMultiplier,
     settings.stopLossMultiplier,
     settings.positionTimeoutMinutes,
     settings.buyAmountSol,
@@ -603,10 +620,10 @@ function insertActivePosition(position: ActivePosition, savedAt: string) {
       INSERT INTO active_positions (
         id, token_symbol, token_mint, source_trader, buy_platform, buy_tx, entry_price_usd,
         current_price_usd, current_price_updated_at, amount_usd, sol_spent, buy_network_fee_sol,
-        buy_priority_fee_sol, buy_quoted_out_amount, buy_actual_sol_change, token_amount, opened_at, status,
+        buy_priority_fee_sol, buy_quoted_out_amount, buy_actual_sol_change, token_amount, opened_at, status, profit_tier,
         created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         token_symbol = excluded.token_symbol,
         token_mint = excluded.token_mint,
@@ -625,6 +642,7 @@ function insertActivePosition(position: ActivePosition, savedAt: string) {
         token_amount = excluded.token_amount,
         opened_at = excluded.opened_at,
         status = excluded.status,
+        profit_tier = excluded.profit_tier,
         updated_at = excluded.updated_at
     `
   ).run(
@@ -646,6 +664,7 @@ function insertActivePosition(position: ActivePosition, savedAt: string) {
     position.tokenAmount,
     position.openedAt,
     position.status,
+    position.profitTier,
     savedAt,
     savedAt
   );
@@ -657,11 +676,11 @@ function insertClosedPosition(position: ClosedPosition, savedAt: string) {
       INSERT INTO closed_positions (
         id, token_symbol, token_mint, source_trader, buy_platform, buy_tx, entry_price_usd,
         exit_price_usd, amount_usd, sol_spent, buy_network_fee_sol, buy_priority_fee_sol,
-        buy_quoted_out_amount, buy_actual_sol_change, token_amount, opened_at, exit_platform,
+        buy_quoted_out_amount, buy_actual_sol_change, token_amount, opened_at, profit_tier, exit_platform,
         closed_at, close_reason, sell_tx, sell_network_fee_sol, sell_priority_fee_sol,
         sell_quoted_out_sol, sell_actual_sol_change, created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         token_symbol = excluded.token_symbol,
         token_mint = excluded.token_mint,
@@ -678,6 +697,7 @@ function insertClosedPosition(position: ClosedPosition, savedAt: string) {
         buy_actual_sol_change = excluded.buy_actual_sol_change,
         token_amount = excluded.token_amount,
         opened_at = excluded.opened_at,
+        profit_tier = excluded.profit_tier,
         exit_platform = excluded.exit_platform,
         closed_at = excluded.closed_at,
         close_reason = excluded.close_reason,
@@ -704,6 +724,7 @@ function insertClosedPosition(position: ClosedPosition, savedAt: string) {
     position.buyActualSolChange ?? null,
     position.tokenAmount,
     position.openedAt,
+    position.profitTier,
     position.exitPlatform,
     position.closedAt,
     position.closeReason,
@@ -753,7 +774,7 @@ export async function addActivePosition(position: ActivePosition, wallet?: BotWa
 
 export async function patchActivePosition(
   id: string,
-  patch: Partial<Pick<ActivePosition, "currentPriceUsd" | "status" | "buyTx">>
+  patch: Partial<Pick<ActivePosition, "currentPriceUsd" | "status" | "buyTx" | "profitTier">>
 ) {
   const current = db.prepare("SELECT * FROM active_positions WHERE id = ?").get(id) as DbActivePosition | undefined;
 
@@ -767,7 +788,7 @@ export async function patchActivePosition(
   db.prepare(
     `
       UPDATE active_positions
-      SET current_price_usd = ?, current_price_updated_at = ?, status = ?, buy_tx = ?, updated_at = ?
+      SET current_price_usd = ?, current_price_updated_at = ?, status = ?, buy_tx = ?, profit_tier = ?, updated_at = ?
       WHERE id = ?
     `
   ).run(
@@ -775,6 +796,7 @@ export async function patchActivePosition(
     hasPricePatch ? savedAt : current.current_price_updated_at || savedAt,
     patch.status ?? current.status,
     patch.buyTx !== undefined ? patch.buyTx || null : current.buy_tx,
+    patch.profitTier ?? toProfitTier(current.profit_tier),
     savedAt,
     id
   );

@@ -3,7 +3,7 @@ import { ChildProcessWithoutNullStreams, spawn } from "child_process";
 import { createBotLog } from "./logs";
 
 type ManagedProcess = {
-  name: "copy" | "profit";
+  name: "copy" | "profit-low" | "profit-high";
   process: ChildProcessWithoutNullStreams;
 };
 
@@ -33,14 +33,21 @@ function appendLog(name: string, chunk: Buffer) {
   }
 }
 
-function spawnManagedProcess(name: ManagedProcess["name"], script: string) {
+function isProfitProcess(name: ManagedProcess["name"]) {
+  return name === "profit-low" || name === "profit-high";
+}
+
+function spawnManagedProcess(name: ManagedProcess["name"], script: string, extraEnv: NodeJS.ProcessEnv = {}) {
   if (processes.some((item) => item.name === name)) {
     return;
   }
 
   const child = spawn("npm", ["run", script], {
     cwd: backendRoot,
-    env: process.env
+    env: {
+      ...process.env,
+      ...extraEnv
+    }
   });
 
   child.stdout.on("data", (chunk) => appendLog(name, chunk));
@@ -54,7 +61,7 @@ function spawnManagedProcess(name: ManagedProcess["name"], script: string) {
     const wasEnabled = name === "copy" ? state.copyEnabled : state.profitEnabled;
     if (name === "copy") {
       state.copyEnabled = false;
-    } else {
+    } else if (!processes.some((item) => isProfitProcess(item.name))) {
       state.profitEnabled = false;
     }
 
@@ -121,10 +128,11 @@ export function startProfitWatcher() {
   state.stoppedAt = undefined;
   state.lastError = undefined;
 
-  spawnManagedProcess("profit", "worker:profit");
+  spawnManagedProcess("profit-low", "worker:profit", { PROFIT_WATCHER_TIER: "low" });
+  spawnManagedProcess("profit-high", "worker:profit", { PROFIT_WATCHER_TIER: "high" });
   createBotLog({
     event: "PROFIT_WATCHER_STARTED",
-    message: "Auto sell was started from UI"
+    message: "Auto sell workers were started from UI"
   });
 
   return getTradingStatus();
@@ -134,7 +142,7 @@ export function stopProfitWatcher() {
   state.profitEnabled = false;
   state.stoppedAt = new Date().toISOString();
 
-  for (const item of processes.filter((process) => process.name === "profit")) {
+  for (const item of processes.filter((process) => isProfitProcess(process.name))) {
     item.process.kill("SIGTERM");
   }
   createBotLog({

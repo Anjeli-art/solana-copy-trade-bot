@@ -20,6 +20,7 @@ const DEFAULT_POLL_INTERVAL_MS = 5000;
 const DEFAULT_JUPITER_RATE_LIMIT_COOLDOWN_MS = 60000;
 const DEFAULT_SELLING_RECOVERY_MS = 5 * 60 * 1000;
 const jupiterPriceBackoffUntilByToken = new Map<string, number>();
+type ProfitTier = ActivePosition["profitTier"];
 
 function getPollIntervalMs() {
   const value = Number(process.env.PROFIT_WATCHER_POLL_MS);
@@ -34,6 +35,10 @@ function getJupiterRateLimitCooldownMs() {
 function getSellingRecoveryMs() {
   const value = Number(process.env.PROFIT_WATCHER_SELLING_RECOVERY_MS);
   return Number.isFinite(value) && value >= 60000 ? value : DEFAULT_SELLING_RECOVERY_MS;
+}
+
+function getWorkerTier(): ProfitTier {
+  return process.env.PROFIT_WATCHER_TIER === "high" ? "high" : "low";
 }
 
 function sleep(ms: number) {
@@ -78,6 +83,7 @@ async function closePositionAfterSell(
       buyActualSolChange: position.buyActualSolChange,
       tokenAmount: position.tokenAmount,
       openedAt: position.openedAt,
+      profitTier: position.profitTier,
       exitPlatform: "Jupiter",
       closedAt: new Date().toISOString(),
       closeReason,
@@ -93,6 +99,7 @@ async function closePositionAfterSell(
 
 async function inspectPosition(
   position: ActivePosition,
+  workerTier: ProfitTier,
   targetMultiplier: number,
   stopLossMultiplier: number,
   positionTimeoutMinutes: number,
@@ -149,6 +156,7 @@ async function inspectPosition(
       event: "PROFIT_WATCHER_PRICE_CHECK",
       positionId: position.id,
       tokenMint: position.tokenMint,
+      profitTier: workerTier,
       entryPriceUsd: position.entryPriceUsd,
       currentPriceUsd,
       multiplier,
@@ -214,6 +222,7 @@ async function inspectPosition(
       metadata: {
         closeReason,
         multiplier,
+        profitTier: workerTier,
         targetMultiplier,
         stopLossMultiplier,
         positionTimeoutMinutes,
@@ -243,8 +252,9 @@ async function inspectPosition(
     positionId: position.id,
     signature: result.signature,
     metadata: {
-      multiplier,
-      targetMultiplier,
+        multiplier,
+        profitTier: workerTier,
+        targetMultiplier,
       stopLossMultiplier,
       positionTimeoutMinutes,
       positionAgeMs,
@@ -266,6 +276,7 @@ async function inspectPosition(
       positionId: position.id,
       tokenMint: position.tokenMint,
       multiplier,
+      profitTier: workerTier,
       targetMultiplier,
       stopLossMultiplier,
       positionTimeoutMinutes,
@@ -279,8 +290,9 @@ async function inspectPosition(
 export async function startProfitWatcherWorker() {
   const pollIntervalMs = getPollIntervalMs();
   const sellingRecoveryMs = getSellingRecoveryMs();
+  const workerTier = getWorkerTier();
 
-  console.log(`Profit watcher started. Poll interval: ${pollIntervalMs}ms`);
+  console.log(`Profit watcher started. Tier: ${workerTier}. Poll interval: ${pollIntervalMs}ms`);
   console.log(`Stale selling recovery: ${sellingRecoveryMs}ms`);
   console.log("Real multi-platform sell execution through Jupiter: enabled");
 
@@ -289,14 +301,19 @@ export async function startProfitWatcherWorker() {
       await recoverStaleSellingPositions(sellingRecoveryMs);
       const state = await readState();
       const wallet = await refreshWalletBalance(state.wallet);
-      const targetMultiplier = state.settings.profitTargetMultiplier;
+      const targetMultiplier =
+        workerTier === "high"
+          ? state.settings.highProfitTargetMultiplier
+          : state.settings.profitTargetMultiplier;
       const stopLossMultiplier = state.settings.stopLossMultiplier;
       const positionTimeoutMinutes = state.settings.positionTimeoutMinutes;
+      const positionsForTier = state.activePositions.filter((position) => position.profitTier === workerTier);
 
-      for (const position of state.activePositions) {
+      for (const position of positionsForTier) {
         try {
           await inspectPosition(
             position,
+            workerTier,
             targetMultiplier,
             stopLossMultiplier,
             positionTimeoutMinutes,

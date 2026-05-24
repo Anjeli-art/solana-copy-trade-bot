@@ -22,6 +22,7 @@ test("state store persists settings, traders and positions in sqlite", async () 
     ...current,
     settings: {
       profitTargetMultiplier: 1.4,
+      highProfitTargetMultiplier: 1.6,
       stopLossMultiplier: 0.6,
       positionTimeoutMinutes: 120,
       buyAmountSol: 0.02
@@ -47,7 +48,8 @@ test("state store persists settings, traders and positions in sqlite", async () 
         solSpent: 0.033,
         tokenAmount: 300,
         openedAt: "2026-05-14T00:01:00.000Z",
-        status: "open"
+        status: "open",
+        profitTier: "low"
       }
     ]
   }));
@@ -55,6 +57,7 @@ test("state store persists settings, traders and positions in sqlite", async () 
   const state = await readState();
   assert.deepEqual(state.settings, {
     profitTargetMultiplier: 1.4,
+    highProfitTargetMultiplier: 1.6,
     stopLossMultiplier: 0.6,
     positionTimeoutMinutes: 120,
     buyAmountSol: 0.02
@@ -86,10 +89,12 @@ test("targeted state writes do not replace unrelated tables", async () => {
     solSpent: 0.04,
     tokenAmount: 200,
     openedAt: "2026-05-14T00:03:00.000Z",
-    status: "open"
+    status: "open",
+    profitTier: "high"
   });
   await saveSettings({
     profitTargetMultiplier: 1.8,
+    highProfitTargetMultiplier: 2,
     stopLossMultiplier: 0.5,
     positionTimeoutMinutes: 60,
     buyAmountSol: 0.01
@@ -119,7 +124,8 @@ test("adding an active position with a wallet snapshot preserves realized pnl", 
       solSpent: 0.05,
       tokenAmount: 166.67,
       openedAt: "2026-05-14T00:04:00.000Z",
-      status: "open"
+      status: "open",
+      profitTier: "low"
     },
     {
       ...current.wallet,

@@ -110,6 +110,7 @@ function isToken2022(asset: HeliusAsset) {
 }
 
 async function fetchHeliusMetadata(mint: string) {
+  const cached = getCachedMetadata(mint);
   const endpoint = getHeliusEndpoint();
   if (!endpoint) {
     throw new Error("MAINNET_ENDPOINT or RPC_ENDPOINT is required for token metadata");
@@ -142,7 +143,7 @@ async function fetchHeliusMetadata(mint: string) {
     mint,
     name: asset.content?.metadata?.name,
     symbol: asset.content?.metadata?.symbol,
-    image: getImage(asset),
+    image: getImage(asset) || cached?.image,
     decimals: asset.token_info?.decimals,
     isToken2022: isToken2022(asset),
     source: "helius",

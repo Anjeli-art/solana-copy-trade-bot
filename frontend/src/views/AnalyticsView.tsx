@@ -1,12 +1,24 @@
 import { useState } from "react";
 import { BarChart3, Download, Wallet } from "lucide-react";
-import type { ManualTokenAnalytics, TraderAnalytics } from "../types";
+import {
+  Bar,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
+} from "recharts";
+import type { ManualTokenAnalytics, SalesAnalyticsBucket, TraderAnalytics } from "../types";
 import { exportAnalyticsToExcel } from "../utils/analyticsExport";
 import { formatNumber, formatSol, formatUsd, shortAddress } from "../utils/format";
 
 type AnalyticsViewProps = {
   traders: TraderAnalytics[];
   manualTokens: ManualTokenAnalytics[];
+  salesByDay: SalesAnalyticsBucket[];
+  salesByHour: SalesAnalyticsBucket[];
 };
 
 function formatDate(value: string) {
@@ -25,8 +37,10 @@ function formatFeeUsd(value: number) {
   return `-${formatUsd(Math.abs(value))}`;
 }
 
-export function AnalyticsView({ traders, manualTokens }: AnalyticsViewProps) {
+export function AnalyticsView({ traders, manualTokens, salesByDay, salesByHour }: AnalyticsViewProps) {
   const [mode, setMode] = useState<"trading" | "manual">("trading");
+  const [salesBucket, setSalesBucket] = useState<"day" | "hour">("day");
+  const salesChartData = salesBucket === "day" ? salesByDay : salesByHour;
   const totalAmountUsd = traders.reduce((sum, trader) => sum + trader.totalAmountUsd, 0);
   const totalPnlUsd = traders.reduce((sum, trader) => sum + trader.totalPnlUsd, 0);
   const totalProfitPnlUsd = traders.reduce((sum, trader) => sum + (trader.profitPnlUsd ?? Math.max(trader.totalPnlUsd, 0)), 0);
@@ -41,6 +55,71 @@ export function AnalyticsView({ traders, manualTokens }: AnalyticsViewProps) {
   const manualFeeUsd = manualTokens.reduce((sum, token) => sum + (token.totalFeeUsd ?? 0), 0);
   const manualPnlPercent = manualAmountUsd > 0 ? (manualPnlUsd / manualAmountUsd) * 100 : 0;
   const manualTrades = manualTokens.reduce((sum, token) => sum + token.tradeCount, 0);
+  const salesChartSection = (
+    <section className="analytics-section">
+      <div className="section-head">
+        <div>
+          <p className="eyebrow">Closed sales</p>
+          <h2>Sales chart</h2>
+        </div>
+        <div className="analytics-mode-tabs sales-chart-tabs" role="tablist" aria-label="Sales chart bucket">
+          <button
+            className={salesBucket === "day" ? "active" : ""}
+            type="button"
+            onClick={() => setSalesBucket("day")}
+          >
+            Days
+          </button>
+          <button
+            className={salesBucket === "hour" ? "active" : ""}
+            type="button"
+            onClick={() => setSalesBucket("hour")}
+          >
+            Hours
+          </button>
+        </div>
+      </div>
+      {salesChartData.length === 0 ? (
+        <div className="empty-state">No closed sales yet</div>
+      ) : (
+        <div className="sales-chart">
+          <ResponsiveContainer width="100%" height={260}>
+            <ComposedChart data={salesChartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+              <CartesianGrid stroke="#e6ece7" vertical={false} />
+              <XAxis dataKey="label" tick={{ fill: "#66746c", fontSize: 10 }} tickLine={false} axisLine={false} />
+              <YAxis
+                yAxisId="left"
+                tick={{ fill: "#66746c", fontSize: 10 }}
+                tickLine={false}
+                axisLine={false}
+                width={38}
+              />
+              <YAxis
+                yAxisId="right"
+                orientation="right"
+                tick={{ fill: "#66746c", fontSize: 10 }}
+                tickLine={false}
+                axisLine={false}
+                width={42}
+              />
+              <Tooltip
+                contentStyle={{ border: "1px solid #dbe5dd", borderRadius: 8, color: "#17201b" }}
+                formatter={(value, name) => {
+                  if (name === "PnL") return [formatUsd(Number(value)), name];
+                  if (name === "Net SOL") return [`${formatSol(Number(value))} SOL`, name];
+                  if (name === "Fees") return [`${formatSol(Number(value))} SOL`, name];
+                  return [formatNumber(Number(value)), name];
+                }}
+              />
+              <Bar yAxisId="left" dataKey="salesCount" name="Sales" fill="#1f714e" radius={[4, 4, 0, 0]} />
+              <Line yAxisId="right" type="monotone" dataKey="pnlUsd" name="PnL" stroke="#2e5e8f" strokeWidth={2} dot={false} />
+              <Line yAxisId="right" type="monotone" dataKey="feeSol" name="Fees" stroke="#9b2c20" strokeWidth={2} dot={false} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </section>
+  );
 
   return (
     <>
@@ -235,6 +314,8 @@ export function AnalyticsView({ traders, manualTokens }: AnalyticsViewProps) {
         )}
       </section>
       ) : null}
+
+      {salesChartSection}
     </>
   );
 }

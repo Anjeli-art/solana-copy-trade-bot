@@ -1,10 +1,12 @@
 import type {
   BotLog,
   BotWallet,
+  BlacklistedToken,
   ClosedPosition,
   ManualRepeatToken,
   ManualTokenAnalytics,
   Position,
+  SalesAnalyticsBucket,
   Trader,
   TraderAnalytics
 } from "../types";
@@ -15,6 +17,7 @@ type ApiResponse<T> = {
 
 type ApiSettings = {
   profitTargetMultiplier: number;
+  highProfitTargetMultiplier: number;
   stopLossMultiplier: number;
   positionTimeoutMinutes: number;
   buyAmountSol: number;
@@ -41,6 +44,7 @@ type ApiActivePosition = {
   tokenAmount: number;
   openedAt: string;
   status: "open" | "selling";
+  profitTier?: "low" | "high";
 };
 
 type ApiClosedPosition = Omit<ApiActivePosition, "currentPriceUsd" | "status"> & {
@@ -82,7 +86,7 @@ export type TradingStatus = {
   stoppedAt?: string;
   lastError?: string;
   processes: Array<{
-    name: "copy" | "profit";
+    name: "copy" | "profit-low" | "profit-high";
     pid?: number;
   }>;
 };
@@ -127,7 +131,8 @@ export function mapActivePosition(position: ApiActivePosition): Position {
     buyActualSolChange: position.buyActualSolChange,
     tokenAmount: position.tokenAmount,
     trader: position.sourceTrader,
-    openedAt: position.openedAt
+    openedAt: position.openedAt,
+    profitTier: position.profitTier === "high" ? "high" : "low"
   };
 }
 
@@ -150,6 +155,7 @@ export function mapClosedPosition(position: ApiClosedPosition): ClosedPosition {
     tokenAmount: position.tokenAmount,
     trader: position.sourceTrader,
     openedAt: position.openedAt,
+    profitTier: position.profitTier === "high" ? "high" : "low",
     exitPrice: position.exitPriceUsd,
     exitPlatform: position.exitPlatform,
     closedAt: position.closedAt,
@@ -212,12 +218,36 @@ export async function repeatBuyToken(tokenMint: string, amountSol?: number) {
   };
 }
 
+export function updatePositionProfitTier(id: string, profitTier: "low" | "high") {
+  return request<ApiActivePosition[]>(`/api/positions/active/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ profitTier })
+  }).then((positions) => positions.map(mapActivePosition));
+}
+
 export function getManualRepeatTokens() {
   return request<ManualRepeatToken[]>("/api/manual-tokens");
 }
 
 export function deleteManualRepeatToken(tokenMint: string) {
   return request<{ tokenMint: string }>(`/api/manual-tokens/${encodeURIComponent(tokenMint)}`, {
+    method: "DELETE"
+  });
+}
+
+export function getBlacklistedTokens() {
+  return request<BlacklistedToken[]>("/api/blacklist");
+}
+
+export function addBlacklistedToken(tokenMint: string, reason?: string) {
+  return request<BlacklistedToken[]>("/api/blacklist", {
+    method: "POST",
+    body: JSON.stringify({ tokenMint, reason })
+  });
+}
+
+export function deleteBlacklistedToken(tokenMint: string) {
+  return request<{ tokenMint: string }>(`/api/blacklist/${encodeURIComponent(tokenMint)}`, {
     method: "DELETE"
   });
 }
@@ -245,6 +275,10 @@ export function getTraderAnalytics() {
 
 export function getManualTokenAnalytics() {
   return request<ManualTokenAnalytics[]>("/api/analytics/manual-tokens");
+}
+
+export function getSalesAnalytics(bucket: "day" | "hour") {
+  return request<SalesAnalyticsBucket[]>(`/api/analytics/sales?bucket=${bucket}`);
 }
 
 export function getTokenMetadata(mint: string) {

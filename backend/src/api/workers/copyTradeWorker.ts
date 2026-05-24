@@ -11,6 +11,7 @@ import {
 import { executeJupiterBuy } from "../services/jupiterSwap";
 import { createBotLog } from "../services/logs";
 import { logTokenSafetyBeforeBuy } from "../services/tokenSafety";
+import { isTokenBlacklisted } from "../services/tokenBlacklist";
 import { getTokenMetadata } from "../services/tokenMetadata";
 import { refreshWalletBalance } from "../services/walletBalance";
 import { addActivePosition, readState } from "../state/store";
@@ -107,6 +108,30 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
   const state = await readState();
   const amountSol = state.settings.buyAmountSol;
   const existingPosition = state.activePositions.find((position) => position.tokenMint === buy.tokenMint);
+
+  if (isTokenBlacklisted(buy.tokenMint)) {
+    const message = `Buy skipped: token ${buy.tokenMint} is blacklisted`;
+    markProcessed({
+      signature: buy.signature,
+      trader: buy.trader,
+      tokenMint: buy.tokenMint,
+      status: "skipped",
+      message
+    });
+    createBotLog({
+      level: "warn",
+      event: "BUY_SKIPPED_TOKEN_BLACKLISTED",
+      message,
+      trader: buy.trader,
+      tokenMint: buy.tokenMint,
+      signature: buy.signature,
+      metadata: {
+        traderSpentSol: buy.spentSol,
+        platform: buy.platform
+      }
+    });
+    return;
+  }
 
   if (existingPosition) {
     const message = `Buy skipped: active position already exists for ${buy.tokenMint}`;
@@ -210,7 +235,8 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
         buyActualSolChange: result.actualSolChange,
         tokenAmount,
         openedAt: new Date().toISOString(),
-        status: "open"
+        status: "open",
+        profitTier: "high"
       },
       wallet
     );

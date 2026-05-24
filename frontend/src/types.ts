@@ -36,6 +36,7 @@ export type Position = {
   tokenAmount: number;
   trader: string;
   openedAt: string;
+  profitTier: "low" | "high";
 };
 
 export type ClosedPosition = Position & {
@@ -56,6 +57,15 @@ export type ManualRepeatToken = {
   tokenName?: string;
   tokenImage?: string;
   platform: string;
+};
+
+export type BlacklistedToken = {
+  tokenMint: string;
+  tokenSymbol?: string;
+  tokenName?: string;
+  tokenImage?: string;
+  reason?: string;
+  createdAt: string;
 };
 
 export type ClosedFilter = "today" | "week" | "month" | "custom" | "all";
@@ -122,6 +132,16 @@ export type ManualTokenAnalytics = {
   averagePnlUsd: number;
   firstTradeAt: string;
   lastTradeAt: string;
+};
+
+export type SalesAnalyticsBucket = {
+  bucketStart: string;
+  label: string;
+  salesCount: number;
+  grossSol: number;
+  feeSol: number;
+  netSol: number;
+  pnlUsd: number;
 };
 
 export type TraderFormHandler = (event: FormEvent<HTMLFormElement>) => void;

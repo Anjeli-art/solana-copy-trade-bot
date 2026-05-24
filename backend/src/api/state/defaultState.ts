@@ -4,6 +4,7 @@ import { BOT_WALLET_ADDRESS } from "../constants";
 export const defaultState: ApiState = {
   settings: {
     profitTargetMultiplier: 1.5,
+    highProfitTargetMultiplier: 1.05,
     stopLossMultiplier: 0.7,
     positionTimeoutMinutes: 120,
     buyAmountSol: 0.03

@@ -18,7 +18,7 @@ import { TradersView } from "./views/TradersView";
 export function App() {
   const [apiError, setApiError] = useState("");
   const { activeView, navigateToView } = useAppRoute();
-  const { analytics, manualTokenAnalytics, refreshAnalytics } = useAnalytics(setApiError);
+  const { analytics, manualTokenAnalytics, salesByDay, salesByHour, refreshAnalytics } = useAnalytics(setApiError);
   const botState = useBotState(setApiError, refreshAnalytics);
   const trading = useTradingStatus(setApiError);
   const logsState = useLogs(setApiError);
@@ -57,6 +57,7 @@ export function App() {
             openPositions={openPositions}
             traderCount={traderCount}
             takeProfit={botState.takeProfit}
+            highTakeProfit={botState.highTakeProfit}
             buyAmountSol={botState.buyAmountSol}
           />
         ) : null}
@@ -66,6 +67,8 @@ export function App() {
             positions={botState.positions}
             takeProfit={botState.takeProfit}
             draftTakeProfit={botState.draftTakeProfit}
+            highTakeProfit={botState.highTakeProfit}
+            draftHighTakeProfit={botState.draftHighTakeProfit}
             stopLoss={botState.stopLoss}
             draftStopLoss={botState.draftStopLoss}
             positionTimeoutMinutes={botState.positionTimeoutMinutes}
@@ -75,12 +78,14 @@ export function App() {
             solPriceUsd={solPriceUsd}
             isWalletRefreshing={botState.isWalletRefreshing}
             setDraftTakeProfit={botState.setDraftTakeProfit}
+            setDraftHighTakeProfit={botState.setDraftHighTakeProfit}
             setDraftStopLoss={botState.setDraftStopLoss}
             setDraftPositionTimeoutMinutes={botState.setDraftPositionTimeoutMinutes}
             setDraftBuyAmountSol={botState.setDraftBuyAmountSol}
             onRefreshWallet={botState.refreshBotWallet}
             onSaveTakeProfit={botState.saveTradingSettings}
             onSellPosition={botState.sellPosition}
+            onMoveProfitTier={botState.movePositionProfitTier}
           />
         ) : null}
         {botState.hasLoadedState && activeView === "positions" ? (
@@ -88,10 +93,14 @@ export function App() {
             positions={botState.positions}
             closedPositions={botState.closedPositions}
             manualRepeatTokens={botState.manualRepeatTokens}
+            blacklistedTokens={botState.blacklistedTokens}
             repeatBuyingMint={botState.repeatBuyingMint}
             onRepeatBuyToken={botState.repeatBuyKnownToken}
             onDeleteManualToken={botState.removeManualRepeatToken}
+            onAddBlacklistedToken={botState.blockToken}
+            onDeleteBlacklistedToken={botState.unblockToken}
             onSellPosition={botState.sellPosition}
+            onMoveProfitTier={botState.movePositionProfitTier}
           />
         ) : null}
         {botState.hasLoadedState && activeView === "traders" ? (
@@ -106,7 +115,12 @@ export function App() {
           />
         ) : null}
         {botState.hasLoadedState && activeView === "analytics" ? (
-          <AnalyticsView traders={analytics} manualTokens={manualTokenAnalytics} />
+          <AnalyticsView
+            traders={analytics}
+            manualTokens={manualTokenAnalytics}
+            salesByDay={salesByDay}
+            salesByHour={salesByHour}
+          />
         ) : null}
         {botState.hasLoadedState && activeView === "logs" ? (
           <LogsView

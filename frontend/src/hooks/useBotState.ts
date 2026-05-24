@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  addBlacklistedToken,
   closeActivePosition,
+  deleteBlacklistedToken,
   deleteManualRepeatToken,
+  getBlacklistedTokens,
   getManualRepeatTokens,
   getState,
   refreshWallet,
   repeatBuyToken,
-  saveSettings
+  saveSettings,
+  updatePositionProfitTier
 } from "../api/client";
-import type { BotWallet, ClosedPosition, ManualRepeatToken, Position, Trader } from "../types";
+import type { BlacklistedToken, BotWallet, ClosedPosition, ManualRepeatToken, Position, Trader } from "../types";
 
 type SetApiError = (message: string) => void;
 
@@ -25,9 +29,12 @@ export function useBotState(setApiError: SetApiError, refreshAnalytics: () => Pr
   const [positions, setPositions] = useState<Position[]>([]);
   const [closedPositions, setClosedPositions] = useState<ClosedPosition[]>([]);
   const [manualRepeatTokens, setManualRepeatTokens] = useState<ManualRepeatToken[]>([]);
+  const [blacklistedTokens, setBlacklistedTokens] = useState<BlacklistedToken[]>([]);
   const [wallet, setWallet] = useState<BotWallet>(EMPTY_WALLET);
   const [takeProfit, setTakeProfit] = useState(1.5);
   const [draftTakeProfit, setDraftTakeProfit] = useState(1.5);
+  const [highTakeProfit, setHighTakeProfit] = useState(1.05);
+  const [draftHighTakeProfit, setDraftHighTakeProfit] = useState(1.05);
   const [stopLoss, setStopLoss] = useState(0.7);
   const [draftStopLoss, setDraftStopLoss] = useState(0.7);
   const [positionTimeoutMinutes, setPositionTimeoutMinutes] = useState(120);
@@ -49,6 +56,8 @@ export function useBotState(setApiError: SetApiError, refreshAnalytics: () => Pr
       setWallet(state.wallet);
       setTakeProfit(state.settings.profitTargetMultiplier);
       setDraftTakeProfit(state.settings.profitTargetMultiplier);
+      setHighTakeProfit(state.settings.highProfitTargetMultiplier);
+      setDraftHighTakeProfit(state.settings.highProfitTargetMultiplier);
       setStopLoss(state.settings.stopLossMultiplier);
       setDraftStopLoss(state.settings.stopLossMultiplier);
       setPositionTimeoutMinutes(state.settings.positionTimeoutMinutes);
@@ -56,6 +65,7 @@ export function useBotState(setApiError: SetApiError, refreshAnalytics: () => Pr
       setBuyAmountSol(state.settings.buyAmountSol);
       setDraftBuyAmountSol(state.settings.buyAmountSol);
       setManualRepeatTokens(await getManualRepeatTokens());
+      setBlacklistedTokens(await getBlacklistedTokens());
       setHasLoadedState(true);
     } catch (fetchError) {
       setApiError(fetchError instanceof Error ? fetchError.message : "Backend API unavailable");
@@ -73,12 +83,15 @@ export function useBotState(setApiError: SetApiError, refreshAnalytics: () => Pr
       setApiError("");
       const settings = await saveSettings({
         profitTargetMultiplier: draftTakeProfit,
+        highProfitTargetMultiplier: draftHighTakeProfit,
         stopLossMultiplier: draftStopLoss,
         positionTimeoutMinutes: draftPositionTimeoutMinutes,
         buyAmountSol: draftBuyAmountSol
       });
       setTakeProfit(settings.profitTargetMultiplier);
       setDraftTakeProfit(settings.profitTargetMultiplier);
+      setHighTakeProfit(settings.highProfitTargetMultiplier);
+      setDraftHighTakeProfit(settings.highProfitTargetMultiplier);
       setStopLoss(settings.stopLossMultiplier);
       setDraftStopLoss(settings.stopLossMultiplier);
       setPositionTimeoutMinutes(settings.positionTimeoutMinutes);
@@ -91,6 +104,7 @@ export function useBotState(setApiError: SetApiError, refreshAnalytics: () => Pr
     }
   }, [
     draftBuyAmountSol,
+    draftHighTakeProfit,
     draftPositionTimeoutMinutes,
     draftStopLoss,
     draftTakeProfit,
@@ -127,6 +141,18 @@ export function useBotState(setApiError: SetApiError, refreshAnalytics: () => Pr
     [refreshAnalytics, setApiError]
   );
 
+  const movePositionProfitTier = useCallback(
+    async (id: string, profitTier: "low" | "high") => {
+      try {
+        setApiError("");
+        setPositions(await updatePositionProfitTier(id, profitTier));
+      } catch (submitError) {
+        setApiError(submitError instanceof Error ? submitError.message : "Failed to move position profit tier");
+      }
+    },
+    [setApiError]
+  );
+
   const repeatBuyKnownToken = useCallback(
     async (tokenMint: string) => {
       try {
@@ -160,15 +186,43 @@ export function useBotState(setApiError: SetApiError, refreshAnalytics: () => Pr
     [setApiError]
   );
 
+  const blockToken = useCallback(
+    async (tokenMint: string, reason?: string) => {
+      try {
+        setApiError("");
+        setBlacklistedTokens(await addBlacklistedToken(tokenMint, reason));
+      } catch (submitError) {
+        setApiError(submitError instanceof Error ? submitError.message : "Failed to add token to blacklist");
+      }
+    },
+    [setApiError]
+  );
+
+  const unblockToken = useCallback(
+    async (tokenMint: string) => {
+      try {
+        setApiError("");
+        await deleteBlacklistedToken(tokenMint);
+        setBlacklistedTokens((current) => current.filter((token) => token.tokenMint !== tokenMint));
+      } catch (submitError) {
+        setApiError(submitError instanceof Error ? submitError.message : "Failed to remove token from blacklist");
+      }
+    },
+    [setApiError]
+  );
+
   return {
     traders,
     setTraders,
     positions,
     closedPositions,
     manualRepeatTokens,
+    blacklistedTokens,
     wallet,
     takeProfit,
     draftTakeProfit,
+    highTakeProfit,
+    draftHighTakeProfit,
     stopLoss,
     draftStopLoss,
     positionTimeoutMinutes,
@@ -180,6 +234,7 @@ export function useBotState(setApiError: SetApiError, refreshAnalytics: () => Pr
     isWalletRefreshing,
     repeatBuyingMint,
     setDraftTakeProfit,
+    setDraftHighTakeProfit,
     setDraftStopLoss,
     setDraftPositionTimeoutMinutes,
     setDraftBuyAmountSol,
@@ -187,7 +242,10 @@ export function useBotState(setApiError: SetApiError, refreshAnalytics: () => Pr
     saveTradingSettings,
     refreshBotWallet,
     sellPosition,
+    movePositionProfitTier,
     repeatBuyKnownToken,
-    removeManualRepeatToken
+    removeManualRepeatToken,
+    blockToken,
+    unblockToken
   };
 }

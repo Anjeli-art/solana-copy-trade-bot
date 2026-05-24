@@ -6,6 +6,7 @@ import { isPositiveNumber } from "../validation";
 
 type SettingsBody = {
   profitTargetMultiplier?: number;
+  highProfitTargetMultiplier?: number;
   stopLossMultiplier?: number;
   positionTimeoutMinutes?: number;
   buyAmountSol?: number;
@@ -26,6 +27,14 @@ export async function handleSettings(request: IncomingMessage, response: ServerR
       (!isPositiveNumber(body.profitTargetMultiplier) || body.profitTargetMultiplier < 1.01)
     ) {
       sendError(response, 400, "INVALID_PROFIT_TARGET", "profitTargetMultiplier must be at least 1.01");
+      return;
+    }
+
+    if (
+      body.highProfitTargetMultiplier !== undefined &&
+      (!isPositiveNumber(body.highProfitTargetMultiplier) || body.highProfitTargetMultiplier < 1.01)
+    ) {
+      sendError(response, 400, "INVALID_HIGH_PROFIT_TARGET", "highProfitTargetMultiplier must be at least 1.01");
       return;
     }
 
@@ -51,10 +60,25 @@ export async function handleSettings(request: IncomingMessage, response: ServerR
     }
 
     const current = await readState();
+    const nextLowProfit = body.profitTargetMultiplier ?? current.settings.profitTargetMultiplier;
+    const nextHighProfit = body.highProfitTargetMultiplier ?? current.settings.highProfitTargetMultiplier;
+    if (nextHighProfit < nextLowProfit) {
+      sendError(
+        response,
+        400,
+        "INVALID_PROFIT_TIERS",
+        "highProfitTargetMultiplier must be greater than or equal to profitTargetMultiplier"
+      );
+      return;
+    }
+
     const state = await saveSettings({
       ...current.settings,
       ...(body.profitTargetMultiplier !== undefined
         ? { profitTargetMultiplier: body.profitTargetMultiplier }
+        : {}),
+      ...(body.highProfitTargetMultiplier !== undefined
+        ? { highProfitTargetMultiplier: body.highProfitTargetMultiplier }
         : {}),
       ...(body.stopLossMultiplier !== undefined ? { stopLossMultiplier: body.stopLossMultiplier } : {}),
       ...(body.positionTimeoutMinutes !== undefined

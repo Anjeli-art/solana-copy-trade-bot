@@ -57,7 +57,8 @@ const platformPrograms: PlatformProgram[] = [
     programIds: [
       "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
       "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",
-      "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN"
+      "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN",
+      "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG"
     ]
   },
   {
@@ -67,6 +68,10 @@ const platformPrograms: PlatformProgram[] = [
   {
     platform: "PumpSwap",
     programIds: ["pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"]
+  },
+  {
+    platform: "Jupiter",
+    programIds: ["JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"]
   }
 ];
 

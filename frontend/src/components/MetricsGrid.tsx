@@ -4,10 +4,11 @@ type MetricsGridProps = {
   openPositions: number;
   traderCount: number;
   takeProfit: number;
+  highTakeProfit: number;
   buyAmountSol: number;
 };
 
-export function MetricsGrid({ openPositions, traderCount, takeProfit, buyAmountSol }: MetricsGridProps) {
+export function MetricsGrid({ openPositions, traderCount, takeProfit, highTakeProfit, buyAmountSol }: MetricsGridProps) {
   return (
     <section className="panel-grid">
       <article className="metric">
@@ -19,8 +20,8 @@ export function MetricsGrid({ openPositions, traderCount, takeProfit, buyAmountS
         <strong>{traderCount}</strong>
       </article>
       <article className="metric">
-        <span>Take profit</span>
-        <strong>{takeProfit.toFixed(2)}x</strong>
+        <span>Profit tiers</span>
+        <strong>{takeProfit.toFixed(2)}x / {highTakeProfit.toFixed(2)}x</strong>
       </article>
       <article className="metric">
         <span>Buy amount</span>

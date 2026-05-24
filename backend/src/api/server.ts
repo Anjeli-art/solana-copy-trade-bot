@@ -7,6 +7,7 @@ import { handleManualTokens } from "./routes/manualTokens";
 import { handleRaydium } from "./routes/raydium";
 import { handleSwap } from "./routes/swap";
 import { handleSettings } from "./routes/settings";
+import { handleTokenBlacklist } from "./routes/tokenBlacklist";
 import { handleTokens } from "./routes/tokens";
 import { handleTraders } from "./routes/traders";
 import { handleTrading } from "./routes/trading";
@@ -71,6 +72,11 @@ const server = http.createServer(async (request, response) => {
 
     if (parts[0] === "api" && parts[1] === "manual-tokens") {
       await handleManualTokens(request, response, parts[2]);
+      return;
+    }
+
+    if (parts[0] === "api" && parts[1] === "blacklist") {
+      await handleTokenBlacklist(request, response, parts[2]);
       return;
     }
 

@@ -7,6 +7,7 @@ export type TrackedTrader = {
 
 export type BotSettings = {
   profitTargetMultiplier: number;
+  highProfitTargetMultiplier: number;
   stopLossMultiplier: number;
   positionTimeoutMinutes: number;
   buyAmountSol: number;
@@ -35,6 +36,7 @@ export type ActivePosition = {
   tokenAmount: number;
   openedAt: string;
   status: "open" | "selling";
+  profitTier: "low" | "high";
 };
 
 export type CloseReason = "take-profit" | "manual" | "stop-loss" | "timeout";

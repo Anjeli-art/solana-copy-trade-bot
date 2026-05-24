@@ -4,6 +4,8 @@ import { formatSol, formatUsd } from "../utils/format";
 type ProfitSettingsProps = {
   takeProfit: number;
   draftTakeProfit: number;
+  highTakeProfit: number;
+  draftHighTakeProfit: number;
   stopLoss: number;
   draftStopLoss: number;
   positionTimeoutMinutes: number;
@@ -12,6 +14,7 @@ type ProfitSettingsProps = {
   draftBuyAmountSol: number;
   solPriceUsd: number;
   setDraftTakeProfit: (value: number) => void;
+  setDraftHighTakeProfit: (value: number) => void;
   setDraftStopLoss: (value: number) => void;
   setDraftPositionTimeoutMinutes: (value: number) => void;
   setDraftBuyAmountSol: (value: number) => void;
@@ -31,6 +34,8 @@ function formatInputValue(value: number) {
 export function ProfitSettings({
   takeProfit,
   draftTakeProfit,
+  highTakeProfit,
+  draftHighTakeProfit,
   stopLoss,
   draftStopLoss,
   positionTimeoutMinutes,
@@ -39,18 +44,21 @@ export function ProfitSettings({
   draftBuyAmountSol,
   solPriceUsd,
   setDraftTakeProfit,
+  setDraftHighTakeProfit,
   setDraftStopLoss,
   setDraftPositionTimeoutMinutes,
   setDraftBuyAmountSol,
   onSave
 }: ProfitSettingsProps) {
   const [takeProfitInput, setTakeProfitInput] = useState(() => formatInputValue(draftTakeProfit));
+  const [highTakeProfitInput, setHighTakeProfitInput] = useState(() => formatInputValue(draftHighTakeProfit));
   const [stopLossInput, setStopLossInput] = useState(() => formatInputValue(draftStopLoss));
   const [timeoutInput, setTimeoutInput] = useState(() => formatInputValue(draftPositionTimeoutMinutes));
   const [buyAmountInput, setBuyAmountInput] = useState(() => formatInputValue(draftBuyAmountSol));
-  const [activeInput, setActiveInput] = useState<"takeProfit" | "stopLoss" | "timeout" | "buyAmount" | null>(null);
+  const [activeInput, setActiveInput] = useState<"takeProfit" | "highTakeProfit" | "stopLoss" | "timeout" | "buyAmount" | null>(null);
   const hasChanges =
     Math.abs(takeProfit - draftTakeProfit) > 0.0001 ||
+    Math.abs(highTakeProfit - draftHighTakeProfit) > 0.0001 ||
     Math.abs(stopLoss - draftStopLoss) > 0.0001 ||
     Math.abs(positionTimeoutMinutes - draftPositionTimeoutMinutes) > 0.0001 ||
     Math.abs(buyAmountSol - draftBuyAmountSol) > 0.0000001;
@@ -62,6 +70,12 @@ export function ProfitSettings({
       setTakeProfitInput(formatInputValue(draftTakeProfit));
     }
   }, [activeInput, draftTakeProfit]);
+
+  useEffect(() => {
+    if (activeInput !== "highTakeProfit") {
+      setHighTakeProfitInput(formatInputValue(draftHighTakeProfit));
+    }
+  }, [activeInput, draftHighTakeProfit]);
 
   useEffect(() => {
     if (activeInput !== "stopLoss") {
@@ -129,6 +143,7 @@ export function ProfitSettings({
             {hasChanges ? "Unsaved" : "Saved"}
           </div>
           <div className="setting-value">{takeProfit.toFixed(2)}x</div>
+          <div className="setting-value">{highTakeProfit.toFixed(2)}x</div>
           <div className="setting-value stop-loss-value">{stopLoss > 0 ? `${stopLoss.toFixed(2)}x` : "Off"}</div>
           <div className="setting-value timeout-value">
             {positionTimeoutMinutes > 0 ? `${positionTimeoutMinutes}m` : "No timeout"}
@@ -138,7 +153,7 @@ export function ProfitSettings({
       </div>
       <div className="profit-control">
         <label className="number-wrap">
-          <span>Take profit</span>
+          <span>Low profit</span>
           <input
             inputMode="decimal"
             value={takeProfitInput}
@@ -151,6 +166,29 @@ export function ProfitSettings({
             onFocus={() => setActiveInput("takeProfit")}
             onChange={(event) =>
               handleDecimalChange(event.target.value, setTakeProfitInput, setDraftTakeProfit, (value) =>
+                Math.max(1.01, value)
+              )
+            }
+          />
+        </label>
+        <label className="number-wrap">
+          <span>High profit</span>
+          <input
+            inputMode="decimal"
+            value={highTakeProfitInput}
+            onBlur={() => {
+              commitDecimalInput(
+                highTakeProfitInput,
+                draftHighTakeProfit,
+                setHighTakeProfitInput,
+                setDraftHighTakeProfit,
+                (value) => Math.max(1.01, value)
+              );
+              setActiveInput(null);
+            }}
+            onFocus={() => setActiveInput("highTakeProfit")}
+            onChange={(event) =>
+              handleDecimalChange(event.target.value, setHighTakeProfitInput, setDraftHighTakeProfit, (value) =>
                 Math.max(1.01, value)
               )
             }

@@ -8,6 +8,7 @@ import { getPnl } from "../utils/positions";
 type PositionRowProps = {
   position: Position;
   onSell?: (id: string) => void;
+  onMoveProfitTier?: (id: string, profitTier: "low" | "high") => void;
 };
 
 function CopyMintButton({ copied, onCopy }: { copied: boolean; onCopy: () => void }) {
@@ -42,7 +43,7 @@ function formatPriceUpdatedAt(value?: string) {
   });
 }
 
-export function PositionRow({ position, onSell }: PositionRowProps) {
+export function PositionRow({ position, onSell, onMoveProfitTier }: PositionRowProps) {
   const [copiedMint, setCopiedMint] = useState(false);
   const { pnlPercent, pnlUsd } = getPnl(position);
   const tokenLabel = position.tokenName || position.tokenSymbol;
@@ -57,7 +58,7 @@ export function PositionRow({ position, onSell }: PositionRowProps) {
   }
 
   return (
-    <article className="position-row">
+    <article className="position-row active">
       <TokenIcon mint={position.tokenMint} symbol={position.tokenSymbol} tokenImage={position.tokenImage} />
       <div className="position-token">
         <div className="position-token-text">
@@ -85,6 +86,14 @@ export function PositionRow({ position, onSell }: PositionRowProps) {
         <strong>{formatNumber(position.tokenAmount)}</strong>
       </div>
       <div className="platform-pill">{position.platform}</div>
+      <button
+        className={`tier-switch-button ${position.profitTier}`}
+        type="button"
+        title={position.profitTier === "high" ? "Move to low profit worker" : "Move to high profit worker"}
+        onClick={() => onMoveProfitTier?.(position.id, position.profitTier === "high" ? "low" : "high")}
+      >
+        {position.profitTier === "high" ? "High" : "Low"}
+      </button>
       <button className="sell-button" type="button" onClick={() => onSell?.(position.id)}>
         Sell
       </button>
@@ -100,7 +109,11 @@ export function ClosedPositionRow({ position }: { position: ClosedPosition }) {
   });
   const estimatedOutputSol =
     position.solSpent && position.entryPrice > 0 ? position.solSpent * (position.exitPrice / position.entryPrice) : undefined;
-  const outputSol = position.sellActualSolChange ?? position.sellQuotedOutSol ?? estimatedOutputSol;
+  const actualOutputSol =
+    position.sellActualSolChange !== undefined && position.sellActualSolChange > 0
+      ? position.sellActualSolChange
+      : undefined;
+  const outputSol = actualOutputSol ?? position.sellQuotedOutSol ?? position.sellActualSolChange ?? estimatedOutputSol;
   const solPnl = outputSol !== undefined && position.solSpent !== undefined ? outputSol - position.solSpent : undefined;
   const feeSol = position.sellNetworkFeeSol;
   const tokenLabel = position.tokenName || position.tokenSymbol;

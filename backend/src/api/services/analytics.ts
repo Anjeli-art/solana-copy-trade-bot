@@ -50,6 +50,16 @@ export type ManualTokenAnalytics = {
   lastTradeAt: string;
 };
 
+export type SalesAnalyticsBucket = {
+  bucketStart: string;
+  label: string;
+  salesCount: number;
+  grossSol: number;
+  feeSol: number;
+  netSol: number;
+  pnlUsd: number;
+};
+
 type TraderAnalyticsRow = {
   trader: string;
   label?: string;
@@ -93,6 +103,26 @@ type ManualTokenAnalyticsRow = {
   first_trade_at: string;
   last_trade_at: string;
 };
+
+type SalesAnalyticsRow = {
+  bucket_start: string;
+  sales_count: number;
+  gross_sol: number;
+  fee_sol: number;
+  net_sol: number;
+  pnl_usd: number;
+};
+
+function formatSalesLabel(bucketStart: string, bucket: "day" | "hour") {
+  const date = new Date(bucket === "day" ? `${bucketStart}T00:00:00.000Z` : `${bucketStart}:00.000Z`);
+  if (Number.isNaN(date.getTime())) {
+    return bucketStart;
+  }
+
+  return bucket === "day"
+    ? date.toLocaleDateString([], { day: "2-digit", month: "2-digit" })
+    : date.toLocaleString([], { day: "2-digit", month: "2-digit", hour: "2-digit" });
+}
 
 export function listTraderAnalytics(): TraderAnalytics[] {
   const rows = db
@@ -282,4 +312,42 @@ export function listManualTokenAnalytics(): ManualTokenAnalytics[] {
       lastTradeAt: row.last_trade_at
     };
   });
+}
+
+export function listSalesAnalytics(bucket: "day" | "hour" = "day"): SalesAnalyticsBucket[] {
+  const bucketExpression =
+    bucket === "hour" ? "strftime('%Y-%m-%dT%H:00', closed_at)" : "strftime('%Y-%m-%d', closed_at)";
+
+  const rows = db
+    .prepare(
+      `
+        SELECT
+          ${bucketExpression} AS bucket_start,
+          COUNT(*) AS sales_count,
+          COALESCE(SUM(COALESCE(sell_quoted_out_sol, sell_actual_sol_change, 0)), 0) AS gross_sol,
+          COALESCE(SUM(COALESCE(sell_network_fee_sol, 0)), 0) AS fee_sol,
+          COALESCE(SUM(COALESCE(sell_actual_sol_change, sell_quoted_out_sol, 0)), 0) AS net_sol,
+          COALESCE(SUM(
+            CASE
+              WHEN entry_price_usd > 0 THEN amount_usd * (exit_price_usd / entry_price_usd) - amount_usd
+              ELSE 0
+            END
+          ), 0) AS pnl_usd
+        FROM closed_positions
+        WHERE closed_at IS NOT NULL
+        GROUP BY bucket_start
+        ORDER BY bucket_start ASC
+      `
+    )
+    .all() as SalesAnalyticsRow[];
+
+  return rows.map((row) => ({
+    bucketStart: row.bucket_start,
+    label: formatSalesLabel(row.bucket_start, bucket),
+    salesCount: Number(row.sales_count || 0),
+    grossSol: Number(row.gross_sol || 0),
+    feeSol: Number(row.fee_sol || 0),
+    netSol: Number(row.net_sol || 0),
+    pnlUsd: Number(row.pnl_usd || 0)
+  }));
 }

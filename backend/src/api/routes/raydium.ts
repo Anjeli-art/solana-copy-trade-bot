@@ -10,6 +10,7 @@ import {
   isJupiterRateLimitError
 } from "../services/jupiterSwap";
 import { createBotLog } from "../services/logs";
+import { isTokenBlacklisted } from "../services/tokenBlacklist";
 import { getTokenMetadata } from "../services/tokenMetadata";
 import { refreshWalletBalance } from "../services/walletBalance";
 import {
@@ -70,6 +71,11 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
       return;
     }
 
+    if (isTokenBlacklisted(body.tokenMint)) {
+      sendError(response, 409, "TOKEN_BLACKLISTED", "Token is blacklisted and cannot be bought");
+      return;
+    }
+
     const state = await readState();
     const amountSol = body.amountSol ?? state.settings.buyAmountSol;
     if (!isPositiveNumber(amountSol)) {
@@ -114,7 +120,8 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
       buyActualSolChange: result.actualSolChange,
       tokenAmount,
       openedAt: new Date().toISOString(),
-      status: "open"
+      status: "open",
+      profitTier: "high"
     });
 
     createBotLog({
@@ -150,6 +157,11 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
 
     if (!isSolanaAddress(body.tokenMint)) {
       sendError(response, 400, "INVALID_TOKEN_MINT", "tokenMint must be a valid Solana mint address");
+      return;
+    }
+
+    if (isTokenBlacklisted(body.tokenMint)) {
+      sendError(response, 409, "TOKEN_BLACKLISTED", "Token is blacklisted and cannot be bought");
       return;
     }
 
@@ -212,7 +224,8 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
         buyActualSolChange: result.actualSolChange,
         tokenAmount,
         openedAt: new Date().toISOString(),
-        status: "open"
+        status: "open",
+        profitTier: "high"
       },
       wallet
     );
@@ -282,6 +295,7 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
         buyActualSolChange: position.buyActualSolChange,
         tokenAmount: position.tokenAmount,
         openedAt: position.openedAt,
+        profitTier: position.profitTier,
         exitPlatform: "Jupiter",
         closedAt: new Date().toISOString(),
         closeReason: "manual",

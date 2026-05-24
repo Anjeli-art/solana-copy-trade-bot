@@ -53,7 +53,8 @@ function createPosition(body: PositionBody): ActivePosition | null {
     buyActualSolChange: body.buyActualSolChange,
     tokenAmount: body.tokenAmount,
     openedAt: body.openedAt || new Date().toISOString(),
-    status: body.status === "selling" ? "selling" : "open"
+    status: body.status === "selling" ? "selling" : "open",
+    profitTier: body.profitTier === "low" ? "low" : "high"
   };
 }
 
@@ -89,6 +90,7 @@ function closePosition(position: ActivePosition, body: ClosePositionBody): Close
     buyActualSolChange: position.buyActualSolChange,
     tokenAmount: position.tokenAmount,
     openedAt: position.openedAt,
+    profitTier: position.profitTier,
     exitPlatform: "Jupiter",
     closedAt: new Date().toISOString(),
     closeReason,
@@ -127,7 +129,8 @@ export async function handleActivePositions(
     const state = await patchActivePosition(id, {
       ...(isPositiveNumber(body.currentPriceUsd) ? { currentPriceUsd: body.currentPriceUsd } : {}),
       ...(body.status === "open" || body.status === "selling" ? { status: body.status } : {}),
-      ...(body.buyTx !== undefined ? { buyTx: body.buyTx } : {})
+      ...(body.buyTx !== undefined ? { buyTx: body.buyTx } : {}),
+      ...(body.profitTier === "low" || body.profitTier === "high" ? { profitTier: body.profitTier } : {})
     });
 
     sendJson(response, 200, { data: state.activePositions });
