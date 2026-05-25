@@ -1,7 +1,18 @@
 import fs from "fs";
 import path from "path";
 
-const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: any };
+type SqliteDatabase = {
+  exec: (sql: string) => unknown;
+  prepare: (sql: string) => {
+    get: (...params: unknown[]) => unknown;
+    all: (...params: unknown[]) => unknown[];
+    run: (...params: unknown[]) => { changes: number; lastInsertRowid: number | bigint };
+  };
+};
+
+type DatabaseSyncConstructor = new (path: string) => SqliteDatabase;
+
+const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
 
 const dataDir = path.resolve(__dirname, "../../../data");
 const databasePath = process.env.SQLITE_DATABASE_PATH || path.join(dataDir, "copy-bot.db");
@@ -12,6 +23,8 @@ export const db = new DatabaseSync(databasePath);
 
 db.exec(`
   PRAGMA journal_mode = WAL;
+  PRAGMA busy_timeout = 5000;
+  PRAGMA synchronous = NORMAL;
 
   CREATE TABLE IF NOT EXISTS bot_settings (
     id TEXT PRIMARY KEY,
@@ -36,6 +49,7 @@ db.exec(`
     token_symbol TEXT NOT NULL,
     token_mint TEXT NOT NULL,
     source_trader TEXT NOT NULL,
+    source_signature TEXT,
     buy_platform TEXT NOT NULL,
     buy_tx TEXT,
     entry_price_usd REAL NOT NULL,
@@ -60,6 +74,7 @@ db.exec(`
     token_symbol TEXT NOT NULL,
     token_mint TEXT NOT NULL,
     source_trader TEXT NOT NULL,
+    source_signature TEXT,
     buy_platform TEXT NOT NULL,
     buy_tx TEXT,
     entry_price_usd REAL NOT NULL,
@@ -104,6 +119,16 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS copy_buy_token_locks (
+    token_mint TEXT PRIMARY KEY,
+    source_signature TEXT NOT NULL,
+    trader TEXT NOT NULL,
+    status TEXT NOT NULL,
+    message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS bot_logs (
     id TEXT PRIMARY KEY,
     level TEXT NOT NULL,
@@ -145,6 +170,75 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_bot_logs_created_at ON bot_logs (created_at DESC);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_token_mint_unique ON active_positions (token_mint);
+
+  CREATE TABLE IF NOT EXISTS running_workers (
+    name TEXT PRIMARY KEY,
+    pid INTEGER NOT NULL,
+    started_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS trading_runtime (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS mirror_traders (
+    address TEXT PRIMARY KEY,
+    label TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    buy_amount_sol REAL NOT NULL DEFAULT 0.1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS mirror_positions (
+    id TEXT PRIMARY KEY,
+    token_mint TEXT NOT NULL,
+    token_symbol TEXT,
+    mirror_trader TEXT NOT NULL,
+    source_buy_signature TEXT,
+    buy_tx TEXT,
+    entry_price_usd REAL NOT NULL DEFAULT 0,
+    current_price_usd REAL NOT NULL DEFAULT 0,
+    token_amount REAL NOT NULL,
+    sol_spent REAL NOT NULL DEFAULT 0,
+    opened_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS mirror_closed_positions (
+    id TEXT PRIMARY KEY,
+    token_mint TEXT NOT NULL,
+    token_symbol TEXT,
+    mirror_trader TEXT NOT NULL,
+    source_buy_signature TEXT,
+    source_sell_signature TEXT,
+    buy_tx TEXT,
+    sell_tx TEXT,
+    entry_price_usd REAL NOT NULL DEFAULT 0,
+    exit_price_usd REAL NOT NULL DEFAULT 0,
+    token_amount REAL NOT NULL,
+    sol_spent REAL NOT NULL DEFAULT 0,
+    sol_received REAL,
+    close_reason TEXT NOT NULL DEFAULT 'mirror-sell',
+    opened_at TEXT NOT NULL,
+    closed_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS mirror_processed_signatures (
+    signature TEXT PRIMARY KEY,
+    trader TEXT NOT NULL,
+    token_mint TEXT,
+    action TEXT NOT NULL,
+    status TEXT NOT NULL,
+    message TEXT,
+    created_at TEXT NOT NULL
+  );
 `);
 
 const settingsColumns = db.prepare("PRAGMA table_info(bot_settings)").all() as Array<{ name: string }>;
@@ -168,13 +262,14 @@ if (!activePositionColumns.some((column) => column.name === "current_price_updat
   `);
 }
 for (const column of [
+  "source_signature",
   "buy_network_fee_sol",
   "buy_priority_fee_sol",
   "buy_quoted_out_amount",
   "buy_actual_sol_change"
 ]) {
   if (!activePositionColumns.some((activeColumn) => activeColumn.name === column)) {
-    db.exec(`ALTER TABLE active_positions ADD COLUMN ${column} REAL`);
+    db.exec(`ALTER TABLE active_positions ADD COLUMN ${column} ${column === "source_signature" ? "TEXT" : "REAL"}`);
   }
 }
 if (!activePositionColumns.some((column) => column.name === "profit_tier")) {
@@ -183,6 +278,7 @@ if (!activePositionColumns.some((column) => column.name === "profit_tier")) {
 
 const closedPositionColumns = db.prepare("PRAGMA table_info(closed_positions)").all() as Array<{ name: string }>;
 for (const column of [
+  "source_signature",
   "buy_network_fee_sol",
   "buy_priority_fee_sol",
   "buy_quoted_out_amount",
@@ -193,7 +289,7 @@ for (const column of [
   "sell_actual_sol_change"
 ]) {
   if (!closedPositionColumns.some((closedColumn) => closedColumn.name === column)) {
-    db.exec(`ALTER TABLE closed_positions ADD COLUMN ${column} REAL`);
+    db.exec(`ALTER TABLE closed_positions ADD COLUMN ${column} ${column === "source_signature" ? "TEXT" : "REAL"}`);
   }
 }
 if (!closedPositionColumns.some((column) => column.name === "profit_tier")) {

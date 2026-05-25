@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Copy, RefreshCw, Trash2 } from "lucide-react";
+import { ConfirmModal } from "../components/ConfirmModal";
 import type { BotLog } from "../types";
 import { CalendarInput } from "../components/CalendarInput";
 import { TimeInput } from "../components/TimeInput";
@@ -12,6 +13,7 @@ type LogsViewProps = {
   isRefreshing: boolean;
   onEventFilterChange: (event: string) => void;
   onDeleteLog: (id: string) => void;
+  onDeleteAllByEvent: (event: string) => void;
   onRefresh: () => void;
 };
 
@@ -70,10 +72,12 @@ export function LogsView({
   isRefreshing,
   onEventFilterChange,
   onDeleteLog,
+  onDeleteAllByEvent,
   onRefresh
 }: LogsViewProps) {
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [deleteAllPending, setDeleteAllPending] = useState(false);
   const [fromDate, setFromDate] = useState(() => toDateInputValue(new Date()));
   const [toDate, setToDate] = useState(() => toDateInputValue(new Date()));
   const [fromTime, setFromTime] = useState("");
@@ -144,17 +148,27 @@ export function LogsView({
           <TimeInput label="From time" value={fromTime} onChange={setFromTime} />
           <CalendarInput label="To date" value={toDate} onChange={setToDate} />
           <TimeInput label="To time" value={toTime} onChange={setToTime} />
-          <label className="log-select-filter">
-            <span>Event</span>
-            <select value={eventFilter} onChange={(event) => onEventFilterChange(event.target.value)}>
-              <option value="all">All events</option>
-              {eventOptions.map((eventName) => (
-                <option value={eventName} key={eventName}>
-                  {eventName}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="log-select-filter-wrap">
+            <label className="log-select-filter">
+              <span>Event</span>
+              <select value={eventFilter} onChange={(event) => onEventFilterChange(event.target.value)}>
+                <option value="all">All events</option>
+                {eventOptions.map((eventName) => (
+                  <option value={eventName} key={eventName}>
+                    {eventName}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="delete-event-button"
+              type="button"
+              title={eventFilter === "all" ? "Delete all logs" : `Delete all "${eventFilter}" logs`}
+              onClick={() => setDeleteAllPending(true)}
+            >
+              <Trash2 size={13} />
+            </button>
+          </div>
           <button
             className="refresh-button"
             type="button"
@@ -237,6 +251,23 @@ export function LogsView({
           ))
         )}
       </div>
+      {deleteAllPending && (
+        <ConfirmModal
+          title={eventFilter === "all" ? "Delete all logs?" : `Delete all "${eventFilter}" logs?`}
+          description={
+            eventFilter === "all"
+              ? `This will permanently delete all ${logs.length} logs.`
+              : `This will permanently delete all ${filteredLogs.length} logs with event "${eventFilter}".`
+          }
+          confirmLabel="Delete all"
+          variant="danger"
+          onConfirm={() => {
+            setDeleteAllPending(false);
+            onDeleteAllByEvent(eventFilter);
+          }}
+          onCancel={() => setDeleteAllPending(false)}
+        />
+      )}
       {filteredLogs.length > 0 ? (
         <div className="table-pagination" aria-label="Logs pagination">
           <label className="select-wrap page-size-wrap pagination-page-size">

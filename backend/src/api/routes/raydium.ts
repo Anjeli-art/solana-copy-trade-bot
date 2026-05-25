@@ -48,7 +48,7 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unknown error";
 }
 
-export async function handleRaydium(request: IncomingMessage, response: ServerResponse, action?: string) {
+export async function handleSwap(request: IncomingMessage, response: ServerResponse, action?: string) {
   if (request.method === "GET" && action === "pool") {
     const url = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1:3001"}`);
     const tokenMint = url.searchParams.get("tokenMint") || "";
@@ -77,6 +77,11 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
     }
 
     const state = await readState();
+    if (state.activePositions.some((position) => position.tokenMint === body.tokenMint)) {
+      sendError(response, 409, "POSITION_ALREADY_EXISTS", "Active position already exists for this token");
+      return;
+    }
+
     const amountSol = body.amountSol ?? state.settings.buyAmountSol;
     if (!isPositiveNumber(amountSol)) {
       sendError(response, 400, "INVALID_BUY_AMOUNT", "amountSol must be a positive number");
@@ -101,7 +106,8 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
       return;
     }
     const tokenAmount = result.tokenAmountDelta || 0;
-    const amountUsd = amountSol * state.wallet.solPriceUsd;
+    const actualSolSpent = result.actualSolChange !== undefined ? Math.abs(result.actualSolChange) : amountSol;
+    const amountUsd = actualSolSpent * state.wallet.solPriceUsd;
     const entryPriceUsd = tokenAmount > 0 && amountUsd > 0 ? amountUsd / tokenAmount : 0;
     const nextState = await addActivePosition({
       id: randomUUID(),
@@ -113,7 +119,7 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
       entryPriceUsd,
       currentPriceUsd: entryPriceUsd,
       amountUsd,
-      solSpent: amountSol,
+      solSpent: actualSolSpent,
       buyNetworkFeeSol: result.networkFeeSol,
       buyPriorityFeeSol: result.priorityFeeSol,
       buyQuotedOutAmount: result.quotedOutAmount,
@@ -166,6 +172,11 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
     }
 
     const state = await readState();
+    if (state.activePositions.some((position) => position.tokenMint === body.tokenMint)) {
+      sendError(response, 409, "POSITION_ALREADY_EXISTS", "Active position already exists for this token");
+      return;
+    }
+
     const knownPosition = [...state.activePositions, ...state.closedPositions].find(
       (position) => position.tokenMint === body.tokenMint
     );
@@ -201,7 +212,8 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
       return;
     }
     const tokenAmount = result.tokenAmountDelta || 0;
-    const amountUsd = amountSol * wallet.solPriceUsd;
+    const actualSolSpentRepeat = result.actualSolChange !== undefined ? Math.abs(result.actualSolChange) : amountSol;
+    const amountUsd = actualSolSpentRepeat * wallet.solPriceUsd;
     const entryPriceUsd = tokenAmount > 0 && amountUsd > 0 ? amountUsd / tokenAmount : 0;
     const tokenMetadata = await getTokenMetadata(body.tokenMint).catch(() => undefined);
     const nextState = await addActivePosition(
@@ -212,12 +224,13 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
         tokenMint: body.tokenMint,
         tokenImage: tokenMetadata?.image || knownPosition.tokenImage,
         sourceTrader: "manual-repeat",
+        sourceSignature: knownPosition.sourceSignature,
         buyPlatform: "Jupiter",
         buyTx: result.signature,
         entryPriceUsd,
         currentPriceUsd: entryPriceUsd,
         amountUsd,
-        solSpent: amountSol,
+        solSpent: actualSolSpentRepeat,
         buyNetworkFeeSol: result.networkFeeSol,
         buyPriorityFeeSol: result.priorityFeeSol,
         buyQuotedOutAmount: result.quotedOutAmount,
@@ -269,20 +282,40 @@ export async function handleRaydium(request: IncomingMessage, response: ServerRe
       sendError(response, 404, "POSITION_NOT_FOUND", "Position not found");
       return;
     }
+    if (position.status === "selling") {
+      sendError(response, 409, "POSITION_ALREADY_SELLING", "Position is already being sold");
+      return;
+    }
 
     const wallet = await refreshWalletBalance(state.wallet);
     const exitPriceUsd = await getJupiterTokenPriceUsd(position.tokenMint, position.tokenAmount, wallet.solPriceUsd);
-    if (exitPriceUsd > 0) {
-      await patchActivePosition(position.id, { currentPriceUsd: exitPriceUsd });
+    await patchActivePosition(position.id, {
+      status: "selling",
+      ...(exitPriceUsd > 0 ? { currentPriceUsd: exitPriceUsd } : {})
+    });
+    let result;
+    try {
+      result = await executeJupiterSell(position.tokenMint, position.tokenAmount);
+    } catch (error) {
+      await patchActivePosition(position.id, {
+        status: "open",
+        ...(exitPriceUsd > 0 ? { currentPriceUsd: exitPriceUsd } : {})
+      });
+      sendError(response, 502, "JUPITER_SELL_FAILED", getErrorMessage(error));
+      return;
     }
-    const result = await executeJupiterSell(position.tokenMint, position.tokenAmount);
-    const pnlUsd = getPnlUsd(position.amountUsd, position.entryPriceUsd, exitPriceUsd || position.currentPriceUsd);
+    // Prefer actual SOL in/out — includes all fees, not subject to stale price data.
+    const pnlUsd =
+      result.actualSolChange !== undefined && position.buyActualSolChange !== undefined
+        ? (result.actualSolChange + position.buyActualSolChange) * wallet.solPriceUsd
+        : getPnlUsd(position.amountUsd, position.entryPriceUsd, exitPriceUsd || position.currentPriceUsd);
     const nextState = await closeActivePositionInStore(
       {
         id: position.id,
         tokenSymbol: position.tokenSymbol,
         tokenMint: position.tokenMint,
         sourceTrader: position.sourceTrader,
+        sourceSignature: position.sourceSignature,
         buyPlatform: position.buyPlatform,
         buyTx: position.buyTx,
         entryPriceUsd: position.entryPriceUsd,

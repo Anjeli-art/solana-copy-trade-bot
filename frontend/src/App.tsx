@@ -6,36 +6,50 @@ import { useAnalytics } from "./hooks/useAnalytics";
 import { useAppRoute } from "./hooks/useAppRoute";
 import { useBotState } from "./hooks/useBotState";
 import { useLogs } from "./hooks/useLogs";
-import { useSolPrice } from "./hooks/useSolPrice";
+import { useMirrorState } from "./hooks/useMirrorState";
 import { useTraderManagement } from "./hooks/useTraderManagement";
 import { useTradingStatus } from "./hooks/useTradingStatus";
 import { AnalyticsView } from "./views/AnalyticsView";
 import { DashboardView } from "./views/DashboardView";
 import { LogsView } from "./views/LogsView";
+import { MirrorView } from "./views/MirrorView";
 import { PositionsView } from "./views/PositionsView";
 import { TradersView } from "./views/TradersView";
 
 export function App() {
   const [apiError, setApiError] = useState("");
   const { activeView, navigateToView } = useAppRoute();
-  const { analytics, manualTokenAnalytics, salesByDay, salesByHour, refreshAnalytics } = useAnalytics(setApiError);
+  const { analytics, manualTokenAnalytics, mirrorAnalytics, salesByDay, salesByHour, refreshAnalytics } = useAnalytics(setApiError);
   const botState = useBotState(setApiError, refreshAnalytics);
   const trading = useTradingStatus(setApiError);
   const logsState = useLogs(setApiError);
+  const mirrorState = useMirrorState(setApiError);
   const traderForm = useTraderManagement(botState.traders, botState.setTraders);
-  const solPriceUsd = useSolPrice(botState.wallet.solPriceUsd);
+  const solPriceUsd = botState.wallet.solPriceUsd;
 
-  const traderCount = useMemo(() => botState.traders.length, [botState.traders.length]);
+  const traderCount = useMemo(() => botState.traders.filter((t) => t.enabled !== false).length, [botState.traders]);
   const openPositions = botState.positions.length;
 
   useEffect(() => {
     const stateTimer = window.setInterval(() => {
       botState.refreshState();
       refreshAnalytics();
-    }, trading.hasActiveAutomation ? 30000 : 60000);
+    }, trading.hasActiveAutomation ? 10000 : 30000);
+
+    const refreshVisibleState = () => {
+      if (document.visibilityState === "visible") {
+        botState.refreshState();
+        refreshAnalytics();
+      }
+    };
+
+    window.addEventListener("focus", refreshVisibleState);
+    document.addEventListener("visibilitychange", refreshVisibleState);
 
     return () => {
       window.clearInterval(stateTimer);
+      window.removeEventListener("focus", refreshVisibleState);
+      document.removeEventListener("visibilitychange", refreshVisibleState);
     };
   }, [botState.refreshState, refreshAnalytics, trading.hasActiveAutomation]);
 
@@ -59,6 +73,10 @@ export function App() {
             takeProfit={botState.takeProfit}
             highTakeProfit={botState.highTakeProfit}
             buyAmountSol={botState.buyAmountSol}
+            copyEnabled={trading.copyEnabled}
+            profitEnabled={trading.profitEnabled}
+            mirrorEnabled={mirrorState.status.enabled}
+            mirrorPositions={mirrorState.positions.length}
           />
         ) : null}
         {botState.hasLoadedState && activeView === "dashboard" ? (
@@ -92,6 +110,7 @@ export function App() {
           <PositionsView
             positions={botState.positions}
             closedPositions={botState.closedPositions}
+            solPriceUsd={solPriceUsd}
             manualRepeatTokens={botState.manualRepeatTokens}
             blacklistedTokens={botState.blacklistedTokens}
             repeatBuyingMint={botState.repeatBuyingMint}
@@ -112,12 +131,14 @@ export function App() {
             setError={traderForm.setError}
             addTrader={traderForm.addTrader}
             removeTrader={traderForm.removeTrader}
+            toggleTrader={traderForm.toggleTrader}
           />
         ) : null}
         {botState.hasLoadedState && activeView === "analytics" ? (
           <AnalyticsView
             traders={analytics}
             manualTokens={manualTokenAnalytics}
+            mirrorTraders={mirrorAnalytics}
             salesByDay={salesByDay}
             salesByHour={salesByHour}
           />
@@ -130,7 +151,24 @@ export function App() {
             isRefreshing={logsState.isLogsRefreshing}
             onEventFilterChange={logsState.changeLogEventFilter}
             onDeleteLog={logsState.removeLog}
+            onDeleteAllByEvent={logsState.removeLogsByEvent}
             onRefresh={() => logsState.refreshLogs()}
+          />
+        ) : null}
+        {activeView === "mirror" ? (
+          <MirrorView
+            status={mirrorState.status}
+            traders={mirrorState.traders}
+            positions={mirrorState.positions}
+            closedPositions={mirrorState.closedPositions}
+            updatingMirror={mirrorState.updatingMirror}
+            sellPending={mirrorState.sellPending}
+            solPriceUsd={solPriceUsd}
+            onToggleMirror={mirrorState.toggleMirror}
+            onAddTrader={mirrorState.addTrader}
+            onRemoveTrader={mirrorState.removeTrader}
+            onUpdateTrader={mirrorState.updateTrader}
+            onSellPosition={mirrorState.sellPosition}
           />
         ) : null}
       </section>

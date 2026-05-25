@@ -56,6 +56,19 @@ type RaydiumSwapResult = {
   tokenAmountDelta?: number;
 };
 
+type RaydiumPoolListItem = {
+  id?: string;
+  type?: string;
+};
+
+type RaydiumPoolListResponse = {
+  data?: RaydiumPoolListItem[];
+};
+
+type DecimalLike = {
+  toString: () => string;
+};
+
 function getRpcEndpoint() {
   return process.env.MAINNET_ENDPOINT || process.env.RPC_ENDPOINT || "";
 }
@@ -167,11 +180,11 @@ export async function findRaydiumPoolId(tokenMint: string) {
     disableLoadToken: true,
     blockhashCommitment: "confirmed"
   });
-  const response: any = await raydium.api.fetchPoolByMints({
+  const response = await raydium.api.fetchPoolByMints({
     mint1: WSOL_MINT,
     mint2: tokenMint
-  });
-  const pool = response?.data?.find((item: any) => item.type === "Standard");
+  }) as RaydiumPoolListResponse;
+  const pool = response?.data?.find((item) => item.type === "Standard");
 
   if (!pool?.id) {
     throw new Error("Raydium Standard AMM pool was not found for this token");
@@ -181,7 +194,7 @@ export async function findRaydiumPoolId(tokenMint: string) {
   return pool.id as string;
 }
 
-function rawReserveToUiAmount(rawReserve: any, decimals: number) {
+function rawReserveToUiAmount(rawReserve: DecimalLike, decimals: number) {
   return Number(new Decimal(rawReserve.toString()).div(10 ** decimals).toString());
 }
 

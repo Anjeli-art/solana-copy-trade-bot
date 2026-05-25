@@ -7,7 +7,7 @@ export type Trader = {
   createdAt: string;
 };
 
-export type View = "dashboard" | "positions" | "traders" | "analytics" | "logs";
+export type View = "dashboard" | "positions" | "traders" | "analytics" | "logs" | "mirror";
 
 export type BotWallet = {
   address: string;
@@ -35,6 +35,7 @@ export type Position = {
   buyActualSolChange?: number;
   tokenAmount: number;
   trader: string;
+  sourceSignature?: string;
   openedAt: string;
   profitTier: "low" | "high";
 };
@@ -43,7 +44,7 @@ export type ClosedPosition = Position & {
   exitPrice: number;
   exitPlatform: string;
   closedAt: string;
-  closeReason: "take-profit" | "manual" | "stop-loss" | "timeout";
+  closeReason: "take-profit" | "manual" | "stop-loss" | "timeout" | "deleted";
   sellTx: string;
   sellNetworkFeeSol?: number;
   sellPriorityFeeSol?: number;
@@ -145,3 +146,72 @@ export type SalesAnalyticsBucket = {
 };
 
 export type TraderFormHandler = (event: FormEvent<HTMLFormElement>) => void;
+
+export type MirrorTraderAnalytics = {
+  trader: string;
+  label?: string;
+  tradeCount: number;
+  activeTradeCount: number;
+  closedTradeCount: number;
+  totalSolSpent: number;
+  totalSolReceived: number;
+  realizedPnlSol: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+  firstTradeAt: string;
+  lastTradeAt: string;
+};
+
+export type MirrorTrader = {
+  address: string;
+  label?: string;
+  enabled: boolean;
+  buyAmountSol: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MirrorPosition = {
+  id: string;
+  tokenMint: string;
+  tokenSymbol: string;
+  tokenName?: string;
+  tokenImage?: string;
+  mirrorTrader: string;
+  sourceBuySignature?: string;
+  buyTx?: string;
+  entryPriceUsd: number;
+  currentPriceUsd: number;
+  tokenAmount: number;
+  solSpent: number;
+  openedAt: string;
+  status: string;
+};
+
+export type MirrorClosedPosition = {
+  id: string;
+  tokenMint: string;
+  tokenSymbol: string;
+  tokenName?: string;
+  tokenImage?: string;
+  mirrorTrader: string;
+  sourceBuySignature?: string;
+  sourceSellSignature?: string;
+  buyTx?: string;
+  sellTx?: string;
+  entryPriceUsd: number;
+  exitPriceUsd: number;
+  tokenAmount: number;
+  solSpent: number;
+  solReceived?: number;
+  closeReason: string;
+  openedAt: string;
+  closedAt: string;
+};
+
+export type MirrorStatus = {
+  enabled: boolean;
+  mirrorEnabled: boolean;
+  processes: Array<{ name: string; pid?: number }>;
+};

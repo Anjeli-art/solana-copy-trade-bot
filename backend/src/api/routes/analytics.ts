@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import { sendError, sendJson } from "../http/response";
-import { listManualTokenAnalytics, listSalesAnalytics, listTraderAnalytics } from "../services/analytics";
+import { listManualTokenAnalytics, listMirrorTraderAnalytics, listSalesAnalytics, listTraderAnalytics } from "../services/analytics";
 
 export async function handleAnalytics(request: IncomingMessage, response: ServerResponse, resource?: string) {
   if (request.method === "GET" && resource === "traders") {
@@ -10,6 +10,11 @@ export async function handleAnalytics(request: IncomingMessage, response: Server
 
   if (request.method === "GET" && resource === "manual-tokens") {
     sendJson(response, 200, { data: listManualTokenAnalytics() });
+    return;
+  }
+
+  if (request.method === "GET" && resource === "mirror-traders") {
+    sendJson(response, 200, { data: listMirrorTraderAnalytics() });
     return;
   }
 

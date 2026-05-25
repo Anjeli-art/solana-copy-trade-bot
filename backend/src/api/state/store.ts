@@ -18,6 +18,10 @@ type LegacyState = Partial<ApiState> & {
   settings?: Partial<ApiState["settings"]> & { buyAmountUsd?: number };
 };
 
+type NodeFsError = Error & {
+  code?: string;
+};
+
 type DbTrackedTrader = {
   address: string;
   label: string | null;
@@ -33,6 +37,7 @@ type DbActivePosition = {
   token_mint: string;
   token_image: string | null;
   source_trader: string;
+  source_signature: string | null;
   buy_platform: string;
   buy_tx: string | null;
   entry_price_usd: number;
@@ -58,6 +63,7 @@ type DbClosedPosition = {
   token_mint: string;
   token_image: string | null;
   source_trader: string;
+  source_signature: string | null;
   buy_platform: string;
   buy_tx: string | null;
   entry_price_usd: number;
@@ -141,8 +147,8 @@ async function readLegacyState() {
   try {
     const raw = await fs.readFile(legacyStateFilePath, "utf8");
     return normalizeState(JSON.parse(raw));
-  } catch (error: any) {
-    if (error?.code !== "ENOENT") {
+  } catch (error) {
+    if ((error as NodeFsError)?.code !== "ENOENT") {
       throw error;
     }
     return defaultState;
@@ -178,6 +184,7 @@ function toActivePosition(row: DbActivePosition): ActivePosition {
     tokenMint: row.token_mint,
     tokenImage: row.token_image || undefined,
     sourceTrader: row.source_trader,
+    sourceSignature: row.source_signature || undefined,
     buyPlatform: toPlatformName(row.buy_platform),
     buyTx: row.buy_tx || undefined,
     entryPriceUsd: row.entry_price_usd,
@@ -197,7 +204,7 @@ function toActivePosition(row: DbActivePosition): ActivePosition {
 }
 
 function toClosedPosition(row: DbClosedPosition): ClosedPosition {
-  const closeReason = ["take-profit", "manual", "stop-loss", "timeout"].includes(row.close_reason)
+  const closeReason = ["take-profit", "manual", "stop-loss", "timeout", "deleted"].includes(row.close_reason)
     ? row.close_reason
     : "manual";
 
@@ -208,6 +215,7 @@ function toClosedPosition(row: DbClosedPosition): ClosedPosition {
     tokenMint: row.token_mint,
     tokenImage: row.token_image || undefined,
     sourceTrader: row.source_trader,
+    sourceSignature: row.source_signature || undefined,
     buyPlatform: toPlatformName(row.buy_platform),
     buyTx: row.buy_tx || undefined,
     entryPriceUsd: row.entry_price_usd,
@@ -618,16 +626,17 @@ function insertActivePosition(position: ActivePosition, savedAt: string) {
   db.prepare(
     `
       INSERT INTO active_positions (
-        id, token_symbol, token_mint, source_trader, buy_platform, buy_tx, entry_price_usd,
+        id, token_symbol, token_mint, source_trader, source_signature, buy_platform, buy_tx, entry_price_usd,
         current_price_usd, current_price_updated_at, amount_usd, sol_spent, buy_network_fee_sol,
         buy_priority_fee_sol, buy_quoted_out_amount, buy_actual_sol_change, token_amount, opened_at, status, profit_tier,
         created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         token_symbol = excluded.token_symbol,
         token_mint = excluded.token_mint,
         source_trader = excluded.source_trader,
+        source_signature = excluded.source_signature,
         buy_platform = excluded.buy_platform,
         buy_tx = excluded.buy_tx,
         entry_price_usd = excluded.entry_price_usd,
@@ -650,6 +659,7 @@ function insertActivePosition(position: ActivePosition, savedAt: string) {
     position.tokenSymbol,
     position.tokenMint,
     position.sourceTrader,
+    position.sourceSignature || null,
     position.buyPlatform,
     position.buyTx || null,
     position.entryPriceUsd,
@@ -674,17 +684,18 @@ function insertClosedPosition(position: ClosedPosition, savedAt: string) {
   db.prepare(
     `
       INSERT INTO closed_positions (
-        id, token_symbol, token_mint, source_trader, buy_platform, buy_tx, entry_price_usd,
+        id, token_symbol, token_mint, source_trader, source_signature, buy_platform, buy_tx, entry_price_usd,
         exit_price_usd, amount_usd, sol_spent, buy_network_fee_sol, buy_priority_fee_sol,
         buy_quoted_out_amount, buy_actual_sol_change, token_amount, opened_at, profit_tier, exit_platform,
         closed_at, close_reason, sell_tx, sell_network_fee_sol, sell_priority_fee_sol,
         sell_quoted_out_sol, sell_actual_sol_change, created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         token_symbol = excluded.token_symbol,
         token_mint = excluded.token_mint,
         source_trader = excluded.source_trader,
+        source_signature = excluded.source_signature,
         buy_platform = excluded.buy_platform,
         buy_tx = excluded.buy_tx,
         entry_price_usd = excluded.entry_price_usd,
@@ -712,6 +723,7 @@ function insertClosedPosition(position: ClosedPosition, savedAt: string) {
     position.tokenSymbol,
     position.tokenMint,
     position.sourceTrader,
+    position.sourceSignature || null,
     position.buyPlatform,
     position.buyTx || null,
     position.entryPriceUsd,
@@ -818,7 +830,50 @@ export async function recoverStaleSellingPositions(maxSellingAgeMs: number) {
 }
 
 export async function deleteActivePosition(id: string) {
-  db.prepare("DELETE FROM active_positions WHERE id = ?").run(id);
+  const current = db.prepare("SELECT * FROM active_positions WHERE id = ?").get(id) as DbActivePosition | undefined;
+  if (current) {
+    runTransaction(() => {
+      const savedAt = now();
+      db.prepare("DELETE FROM active_positions WHERE id = ?").run(id);
+      // Write a closed record so the position is never silently lost.
+      db.prepare(
+        `
+          INSERT OR IGNORE INTO closed_positions (
+            id, token_symbol, token_mint, source_trader, source_signature, buy_platform, buy_tx, entry_price_usd,
+            exit_price_usd, amount_usd, sol_spent, buy_network_fee_sol, buy_priority_fee_sol,
+            buy_quoted_out_amount, buy_actual_sol_change, token_amount, opened_at, profit_tier,
+            exit_platform, closed_at, close_reason, created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `
+      ).run(
+        current.id,
+        current.token_symbol,
+        current.token_mint,
+        current.source_trader,
+        current.source_signature ?? null,
+        current.buy_platform,
+        current.buy_tx ?? null,
+        current.entry_price_usd,
+        current.current_price_usd,
+        current.amount_usd,
+        current.sol_spent ?? null,
+        current.buy_network_fee_sol ?? null,
+        current.buy_priority_fee_sol ?? null,
+        current.buy_quoted_out_amount ?? null,
+        current.buy_actual_sol_change ?? null,
+        current.token_amount,
+        current.opened_at,
+        current.profit_tier ?? "low",
+        "Jupiter",
+        savedAt,
+        "deleted",
+        savedAt
+      );
+    });
+  } else {
+    db.prepare("DELETE FROM active_positions WHERE id = ?").run(id);
+  }
   return readState();
 }
 

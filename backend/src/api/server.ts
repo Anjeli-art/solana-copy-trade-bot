@@ -4,12 +4,12 @@ import { handleAnalytics } from "./routes/analytics";
 import { handleActivePositions, handleClosedPositions } from "./routes/positions";
 import { handleLogs } from "./routes/logs";
 import { handleManualTokens } from "./routes/manualTokens";
-import { handleRaydium } from "./routes/raydium";
 import { handleSwap } from "./routes/swap";
 import { handleSettings } from "./routes/settings";
 import { handleTokenBlacklist } from "./routes/tokenBlacklist";
 import { handleTokens } from "./routes/tokens";
 import { handleTraders } from "./routes/traders";
+import { handleMirror } from "./routes/mirror";
 import { handleTrading } from "./routes/trading";
 import { handleWallet } from "./routes/wallet";
 import { refreshWalletBalance } from "./services/walletBalance";
@@ -100,11 +100,6 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    if (parts[0] === "api" && parts[1] === "raydium") {
-      await handleRaydium(request, response, parts[2]);
-      return;
-    }
-
     if (parts[0] === "api" && parts[1] === "swap") {
       await handleSwap(request, response, parts[2]);
       return;
@@ -117,6 +112,11 @@ const server = http.createServer(async (request, response) => {
 
     if (parts[0] === "api" && parts[1] === "trading") {
       await handleTrading(request, response, parts[2]);
+      return;
+    }
+
+    if (parts[0] === "api" && parts[1] === "mirror") {
+      await handleMirror(request, response, parts.slice(2));
       return;
     }
 

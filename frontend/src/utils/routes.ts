@@ -5,7 +5,8 @@ export const VIEW_ROUTES: Record<View, string> = {
   positions: "/positions",
   traders: "/traders",
   analytics: "/analytics",
-  logs: "/logs"
+  logs: "/logs",
+  mirror: "/mirror"
 };
 
 const routeEntries = Object.entries(VIEW_ROUTES) as Array<[View, string]>;

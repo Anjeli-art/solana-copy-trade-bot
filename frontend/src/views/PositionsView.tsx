@@ -12,6 +12,7 @@ type PositionsViewProps = {
   closedPositions?: ClosedPosition[];
   manualRepeatTokens?: ManualRepeatToken[];
   blacklistedTokens?: BlacklistedToken[];
+  solPriceUsd?: number;
   compact?: boolean;
   repeatBuyingMint?: string | null;
   onRepeatBuyToken?: (tokenMint: string) => void;
@@ -47,6 +48,7 @@ export function PositionsView({
   closedPositions = [],
   manualRepeatTokens = [],
   blacklistedTokens = [],
+  solPriceUsd = 0,
   compact = false,
   repeatBuyingMint,
   onRepeatBuyToken,
@@ -454,7 +456,7 @@ export function PositionsView({
                 <button
                   className="export-button"
                   type="button"
-                  onClick={() => exportClosedPositions(filteredClosedPositions)}
+                  onClick={() => exportClosedPositions(filteredClosedPositions, solPriceUsd)}
                 >
                   <Download size={17} />
                   Export
@@ -466,7 +468,7 @@ export function PositionsView({
                 <div className="empty-state">No closed positions</div>
               ) : (
                 paginatedClosedPositions.map((position) => (
-                  <ClosedPositionRow key={position.id} position={position} />
+                  <ClosedPositionRow key={position.id} position={position} solPriceUsd={solPriceUsd} />
                 ))
               )}
             </div>

@@ -168,6 +168,8 @@ export function listTraderAnalytics(): TraderAnalytics[] {
             sol_spent,
             opened_at,
             CASE
+              WHEN sell_actual_sol_change IS NOT NULL AND buy_actual_sol_change IS NOT NULL
+                THEN (sell_actual_sol_change + buy_actual_sol_change) * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0)
               WHEN entry_price_usd > 0 THEN amount_usd * (exit_price_usd / entry_price_usd) - amount_usd
               ELSE 0
             END AS pnl_usd,
@@ -264,6 +266,8 @@ export function listManualTokenAnalytics(): ManualTokenAnalytics[] {
             sol_spent,
             opened_at,
             CASE
+              WHEN sell_actual_sol_change IS NOT NULL AND buy_actual_sol_change IS NOT NULL
+                THEN (sell_actual_sol_change + buy_actual_sol_change) * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0)
               WHEN entry_price_usd > 0 THEN amount_usd * (exit_price_usd / entry_price_usd) - amount_usd
               ELSE 0
             END AS pnl_usd,
@@ -314,6 +318,103 @@ export function listManualTokenAnalytics(): ManualTokenAnalytics[] {
   });
 }
 
+export type MirrorTraderAnalytics = {
+  trader: string;
+  label?: string;
+  tradeCount: number;
+  activeTradeCount: number;
+  closedTradeCount: number;
+  totalSolSpent: number;
+  totalSolReceived: number;
+  realizedPnlSol: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+  firstTradeAt: string;
+  lastTradeAt: string;
+};
+
+type MirrorTraderAnalyticsRow = {
+  trader: string;
+  label?: string;
+  trade_count: number;
+  active_trade_count: number;
+  closed_trade_count: number;
+  total_sol_spent: number;
+  total_sol_received: number;
+  realized_pnl_sol: number;
+  win_count: number;
+  loss_count: number;
+  first_trade_at: string;
+  last_trade_at: string;
+};
+
+export function listMirrorTraderAnalytics(): MirrorTraderAnalytics[] {
+  const rows = db
+    .prepare(
+      `
+        SELECT
+          trades.mirror_trader AS trader,
+          mirror_traders.label AS label,
+          COUNT(*) AS trade_count,
+          SUM(CASE WHEN trades.status = 'active' THEN 1 ELSE 0 END) AS active_trade_count,
+          SUM(CASE WHEN trades.status = 'closed' THEN 1 ELSE 0 END) AS closed_trade_count,
+          COALESCE(SUM(trades.sol_spent), 0) AS total_sol_spent,
+          COALESCE(SUM(CASE WHEN trades.status = 'closed' THEN trades.sol_received ELSE 0 END), 0) AS total_sol_received,
+          COALESCE(SUM(CASE WHEN trades.status = 'closed' THEN trades.pnl_sol ELSE 0 END), 0) AS realized_pnl_sol,
+          SUM(CASE WHEN trades.status = 'closed' AND trades.pnl_sol > 0 THEN 1 ELSE 0 END) AS win_count,
+          SUM(CASE WHEN trades.status = 'closed' AND trades.pnl_sol <= 0 THEN 1 ELSE 0 END) AS loss_count,
+          MIN(trades.opened_at) AS first_trade_at,
+          MAX(trades.opened_at) AS last_trade_at
+        FROM (
+          SELECT
+            mirror_trader,
+            sol_spent,
+            0 AS sol_received,
+            0 AS pnl_sol,
+            opened_at,
+            'active' AS status
+          FROM mirror_positions
+          WHERE status = 'open'
+          UNION ALL
+          SELECT
+            mirror_trader,
+            sol_spent,
+            COALESCE(sol_received, 0) AS sol_received,
+            COALESCE(sol_received, 0) - sol_spent AS pnl_sol,
+            opened_at,
+            'closed' AS status
+          FROM mirror_closed_positions
+        ) trades
+        LEFT JOIN mirror_traders ON mirror_traders.address = trades.mirror_trader
+        GROUP BY trades.mirror_trader, mirror_traders.label
+        ORDER BY realized_pnl_sol DESC, total_sol_spent DESC, trade_count DESC, last_trade_at DESC
+      `
+    )
+    .all() as MirrorTraderAnalyticsRow[];
+
+  return rows.map((row) => {
+    const closedTradeCount = Number(row.closed_trade_count || 0);
+    const winCount = Number(row.win_count || 0);
+
+    return {
+      trader: row.trader,
+      label: row.label || undefined,
+      tradeCount: Number(row.trade_count || 0),
+      activeTradeCount: Number(row.active_trade_count || 0),
+      closedTradeCount,
+      totalSolSpent: Number(row.total_sol_spent || 0),
+      totalSolReceived: Number(row.total_sol_received || 0),
+      realizedPnlSol: Number(row.realized_pnl_sol || 0),
+      winCount,
+      lossCount: Number(row.loss_count || 0),
+      winRate: closedTradeCount > 0 ? (winCount / closedTradeCount) * 100 : 0,
+      firstTradeAt: row.first_trade_at,
+      lastTradeAt: row.last_trade_at
+    };
+  });
+}
+
 export function listSalesAnalytics(bucket: "day" | "hour" = "day"): SalesAnalyticsBucket[] {
   const bucketExpression =
     bucket === "hour" ? "strftime('%Y-%m-%dT%H:00', closed_at)" : "strftime('%Y-%m-%d', closed_at)";
@@ -329,6 +430,8 @@ export function listSalesAnalytics(bucket: "day" | "hour" = "day"): SalesAnalyti
           COALESCE(SUM(COALESCE(sell_actual_sol_change, sell_quoted_out_sol, 0)), 0) AS net_sol,
           COALESCE(SUM(
             CASE
+              WHEN sell_actual_sol_change IS NOT NULL AND buy_actual_sol_change IS NOT NULL
+                THEN (sell_actual_sol_change + buy_actual_sol_change) * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0)
               WHEN entry_price_usd > 0 THEN amount_usd * (exit_price_usd / entry_price_usd) - amount_usd
               ELSE 0
             END

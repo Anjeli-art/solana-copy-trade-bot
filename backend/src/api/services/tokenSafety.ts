@@ -56,6 +56,17 @@ type ParsedMintSafetyInput = {
   extensions?: unknown[];
 };
 
+type ParsedMintAccountData = {
+  program?: string;
+  parsed?: {
+    info?: {
+      mintAuthority?: string | null;
+      freezeAuthority?: string | null;
+      extensions?: unknown[];
+    };
+  };
+};
+
 type QuoteSafetyInput = {
   amountSol: number;
   buyQuote?: JupiterQuote;
@@ -148,7 +159,7 @@ export function buildQuoteSafetyFindings(input: QuoteSafetyInput) {
   if (input.buyQuoteError || !input.buyQuote?.outAmount || Number(input.buyQuote.outAmount) <= 0) {
     findings.push({
       type: "buy-route-unavailable",
-      severity: "error",
+      severity: "warn",
       message: "Jupiter could not build a buy quote for this token.",
       metadata: {
         error: input.buyQuoteError
@@ -159,7 +170,7 @@ export function buildQuoteSafetyFindings(input: QuoteSafetyInput) {
   if (input.sellQuoteError || (input.buyQuote?.outAmount && (!input.sellQuote?.outAmount || Number(input.sellQuote.outAmount) <= 0))) {
     findings.push({
       type: "sell-route-unavailable",
-      severity: "error",
+      severity: "warn",
       message: "Jupiter could not build a sell quote after simulated buy amount. Honeypot risk.",
       metadata: {
         error: input.sellQuoteError,
@@ -216,7 +227,7 @@ async function inspectMint(tokenMint: string) {
   const connection = getRaydiumConnection();
   const account = await connection.getParsedAccountInfo(new PublicKey(tokenMint), "confirmed");
   const mintOwner = account.value?.owner.toBase58();
-  const parsedData = account.value?.data as any;
+  const parsedData = account.value?.data as ParsedMintAccountData | undefined;
   const info = parsedData?.parsed?.info || {};
   const extensions = Array.isArray(info.extensions) ? info.extensions : [];
 

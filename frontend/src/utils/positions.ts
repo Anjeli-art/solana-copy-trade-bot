@@ -9,6 +9,22 @@ export function getPnl(position: Pick<Position, "entryPrice" | "currentPrice" | 
   };
 }
 
+export function getClosedPnlUsd(position: ClosedPosition, solPriceUsd: number) {
+  if (position.sellActualSolChange !== undefined && position.buyActualSolChange !== undefined && solPriceUsd > 0) {
+    const spentSol = Math.abs(position.buyActualSolChange);
+    const netSol = position.sellActualSolChange + position.buyActualSolChange;
+    return {
+      pnlPercent: spentSol > 0 ? (netSol / spentSol) * 100 : 0,
+      pnlUsd: netSol * solPriceUsd
+    };
+  }
+
+  return getPnl({
+    ...position,
+    currentPrice: position.exitPrice
+  });
+}
+
 export function filterClosedPositions(
   positions: ClosedPosition[],
   filter: ClosedFilter,
@@ -37,7 +53,7 @@ export function filterClosedPositions(
   return positions.filter((position) => new Date(position.closedAt).getTime() >= cutoff);
 }
 
-export function exportClosedPositions(positions: ClosedPosition[]) {
+export function exportClosedPositions(positions: ClosedPosition[], solPriceUsd = 0) {
   const headers = [
     "Token",
     "Mint",
@@ -65,10 +81,7 @@ export function exportClosedPositions(positions: ClosedPosition[]) {
   ];
 
   const rows = positions.map((position) => {
-    const { pnlPercent, pnlUsd } = getPnl({
-      ...position,
-      currentPrice: position.exitPrice
-    });
+    const { pnlPercent, pnlUsd } = getClosedPnlUsd(position, solPriceUsd);
 
     return [
       position.tokenSymbol,

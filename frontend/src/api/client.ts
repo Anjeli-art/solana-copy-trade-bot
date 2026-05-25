@@ -5,6 +5,11 @@ import type {
   ClosedPosition,
   ManualRepeatToken,
   ManualTokenAnalytics,
+  MirrorClosedPosition,
+  MirrorPosition,
+  MirrorStatus,
+  MirrorTrader,
+  MirrorTraderAnalytics,
   Position,
   SalesAnalyticsBucket,
   Trader,
@@ -30,6 +35,7 @@ type ApiActivePosition = {
   tokenMint: string;
   tokenImage?: string;
   sourceTrader: string;
+  sourceSignature?: string;
   buyPlatform: string;
   buyTx?: string;
   entryPriceUsd: number;
@@ -51,7 +57,7 @@ type ApiClosedPosition = Omit<ApiActivePosition, "currentPriceUsd" | "status"> &
   exitPriceUsd: number;
   exitPlatform: string;
   closedAt: string;
-  closeReason: "take-profit" | "manual" | "stop-loss" | "timeout";
+  closeReason: "take-profit" | "manual" | "stop-loss" | "timeout" | "deleted";
   sellTx?: string;
   sellNetworkFeeSol?: number;
   sellPriorityFeeSol?: number;
@@ -131,6 +137,7 @@ export function mapActivePosition(position: ApiActivePosition): Position {
     buyActualSolChange: position.buyActualSolChange,
     tokenAmount: position.tokenAmount,
     trader: position.sourceTrader,
+    sourceSignature: position.sourceSignature,
     openedAt: position.openedAt,
     profitTier: position.profitTier === "high" ? "high" : "low"
   };
@@ -281,12 +288,28 @@ export function getSalesAnalytics(bucket: "day" | "hour") {
   return request<SalesAnalyticsBucket[]>(`/api/analytics/sales?bucket=${bucket}`);
 }
 
+export function getMirrorTraderAnalytics() {
+  return request<MirrorTraderAnalytics[]>("/api/analytics/mirror-traders");
+}
+
 export function getTokenMetadata(mint: string) {
   return request<TokenMetadata>(`/api/tokens/${encodeURIComponent(mint)}/metadata`);
 }
 
 export function deleteLog(id: string) {
   return request<{ id: string }>(`/api/logs/${id}`, {
+    method: "DELETE"
+  });
+}
+
+export function deleteLogsByEvent(event: string) {
+  return request<{ deleted: number; event: string }>(`/api/logs?event=${encodeURIComponent(event)}`, {
+    method: "DELETE"
+  });
+}
+
+export function deleteAllLogs() {
+  return request<{ deleted: number }>("/api/logs", {
     method: "DELETE"
   });
 }
@@ -337,4 +360,81 @@ export function deleteTrackedTrader(address: string) {
   return request<Trader[]>(`/api/traders/${address}`, {
     method: "DELETE"
   });
+}
+
+export function patchTrackedTrader(address: string, patch: { enabled?: boolean; label?: string }) {
+  return request<Trader[]>(`/api/traders/${address}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch)
+  });
+}
+
+export type AverageDownPreview = {
+  dcaSol: number;
+  currentMultiplier: number;
+  targetMultiplier: number;
+  newAvgEntryUsd: number;
+  breakEvenRecoveryPct: number;
+  takeProfitRecoveryPct: number;
+  newSolSpent: number;
+  newTokenAmount: number;
+};
+
+export function getAverageDownPreview(positionId: string) {
+  return request<AverageDownPreview>(`/api/positions/active/${positionId}/average-down`);
+}
+
+// Mirror trading
+export function getMirrorStatus() {
+  return request<MirrorStatus>("/api/mirror/status");
+}
+
+export function startMirrorTrading() {
+  return request<MirrorStatus>("/api/mirror/start", { method: "POST" });
+}
+
+export function stopMirrorTrading() {
+  return request<MirrorStatus>("/api/mirror/stop", { method: "POST" });
+}
+
+export function getMirrorTraders() {
+  return request<MirrorTrader[]>("/api/mirror/traders");
+}
+
+export function addMirrorTrader(address: string, label?: string, buyAmountSol?: number) {
+  return request<MirrorTrader[]>("/api/mirror/traders", {
+    method: "POST",
+    body: JSON.stringify({ address, label, buyAmountSol })
+  });
+}
+
+export function patchMirrorTrader(
+  address: string,
+  patch: { label?: string; enabled?: boolean; buyAmountSol?: number }
+) {
+  return request<MirrorTrader[]>(`/api/mirror/traders/${encodeURIComponent(address)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch)
+  });
+}
+
+export function deleteMirrorTrader(address: string) {
+  return request<MirrorTrader[]>(`/api/mirror/traders/${encodeURIComponent(address)}`, {
+    method: "DELETE"
+  });
+}
+
+export function getMirrorPositions() {
+  return request<MirrorPosition[]>("/api/mirror/positions");
+}
+
+export function getMirrorClosedPositions() {
+  return request<MirrorClosedPosition[]>("/api/mirror/positions/closed");
+}
+
+export function sellMirrorPosition(id: string) {
+  return request<{ positions: MirrorPosition[]; sold: boolean; signature?: string }>(
+    `/api/mirror/positions/${encodeURIComponent(id)}/sell`,
+    { method: "POST" }
+  );
 }

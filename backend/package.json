@@ -8,6 +8,7 @@
     "dev": "ts-node src/api/server.ts",
     "monitor:free": "ts-node src/api/monitoring/freeRpcTraderMonitor.ts",
     "worker:copy": "ts-node src/api/workers/copyTradeWorker.ts",
+    "worker:mirror": "ts-node src/api/workers/mirrorTradeWorker.ts",
     "worker:profit": "ts-node src/api/workers/profitWatcherWorker.ts",
     "typecheck:api": "tsc -p tsconfig.api.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",

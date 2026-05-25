@@ -1,9 +1,13 @@
 import { useEffect, useState } from "react";
-import { Check, Copy } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Check, Copy, TrendingDown } from "lucide-react";
 import type { ClosedPosition, Position } from "../types";
 import { TokenIcon } from "./TokenIcon";
+import { ConfirmModal } from "./ConfirmModal";
 import { formatNumber, formatSol, formatUsd, shortAddress } from "../utils/format";
-import { getPnl } from "../utils/positions";
+import { getClosedPnlUsd, getPnl } from "../utils/positions";
+import { getAverageDownPreview } from "../api/client";
+import type { AverageDownPreview } from "../api/client";
 
 type PositionRowProps = {
   position: Position;
@@ -45,7 +49,25 @@ function formatPriceUpdatedAt(value?: string) {
 
 export function PositionRow({ position, onSell, onMoveProfitTier }: PositionRowProps) {
   const [copiedMint, setCopiedMint] = useState(false);
+  const [sellPending, setSellPending] = useState(false);
+  const [tierPending, setTierPending] = useState<"low" | "high" | null>(null);
+  const [avgLoading, setAvgLoading] = useState(false);
+  const [avgPreview, setAvgPreview] = useState<AverageDownPreview | null>(null);
+  const [avgError, setAvgError] = useState<string | null>(null);
   const { pnlPercent, pnlUsd } = getPnl(position);
+
+  async function openAverageDown() {
+    setAvgLoading(true);
+    setAvgError(null);
+    try {
+      const preview = await getAverageDownPreview(position.id);
+      setAvgPreview(preview);
+    } catch (error) {
+      setAvgError(error instanceof Error ? error.message : "Failed to calculate");
+    } finally {
+      setAvgLoading(false);
+    }
+  }
   const tokenLabel = position.tokenName || position.tokenSymbol;
   const tokenDetails = position.tokenName
     ? `${position.tokenSymbol} • ${shortAddress(position.tokenMint)}`
@@ -58,55 +80,136 @@ export function PositionRow({ position, onSell, onMoveProfitTier }: PositionRowP
   }
 
   return (
-    <article className="position-row active">
-      <TokenIcon mint={position.tokenMint} symbol={position.tokenSymbol} tokenImage={position.tokenImage} />
-      <div className="position-token">
-        <div className="position-token-text">
-          <strong title={tokenLabel}>{tokenLabel}</strong>
-          <span title={position.tokenMint}>{tokenDetails}</span>
+    <>
+      <article className="position-row active">
+        <TokenIcon mint={position.tokenMint} symbol={position.tokenSymbol} tokenImage={position.tokenImage} />
+        <div className="position-token">
+          <div className="position-token-text">
+            <strong title={tokenLabel}>{tokenLabel}</strong>
+            <span title={position.tokenMint}>{tokenDetails}</span>
+          </div>
+          <CopyMintButton copied={copiedMint} onCopy={copyMint} />
         </div>
-        <CopyMintButton copied={copiedMint} onCopy={copyMint} />
-      </div>
-      <div className="position-cell">
-        <span>Entry</span>
-        <strong>{formatUsd(position.entryPrice)}</strong>
-      </div>
-      <div className="position-cell">
-        <span title={position.priceUpdatedAt ? `Updated ${new Date(position.priceUpdatedAt).toLocaleString()}` : undefined}>
-          Current · {formatPriceUpdatedAt(position.priceUpdatedAt)}
-        </span>
-        <strong>{formatUsd(position.currentPrice)}</strong>
-      </div>
-      <div className={`position-pnl ${pnlPercent >= 0 ? "positive" : "negative"}`}>
-        <strong>{pnlPercent >= 0 ? "+" : ""}{pnlPercent.toFixed(2)}%</strong>
-        <span>{pnlUsd >= 0 ? "+" : ""}{formatUsd(pnlUsd)}</span>
-      </div>
-      <div className="position-cell">
-        <span>Amount</span>
-        <strong>{formatNumber(position.tokenAmount)}</strong>
-      </div>
-      <div className="platform-pill">{position.platform}</div>
-      <button
-        className={`tier-switch-button ${position.profitTier}`}
-        type="button"
-        title={position.profitTier === "high" ? "Move to low profit worker" : "Move to high profit worker"}
-        onClick={() => onMoveProfitTier?.(position.id, position.profitTier === "high" ? "low" : "high")}
-      >
-        {position.profitTier === "high" ? "High" : "Low"}
-      </button>
-      <button className="sell-button" type="button" onClick={() => onSell?.(position.id)}>
-        Sell
-      </button>
-    </article>
+        <div className="position-cell">
+          <span>Entry</span>
+          <strong>{formatUsd(position.entryPrice)}</strong>
+        </div>
+        <div className="position-cell">
+          <span title={position.priceUpdatedAt ? `Updated ${new Date(position.priceUpdatedAt).toLocaleString()}` : undefined}>
+            Current · {formatPriceUpdatedAt(position.priceUpdatedAt)}
+          </span>
+          <strong>{formatUsd(position.currentPrice)}</strong>
+        </div>
+        <div className={`position-pnl ${pnlPercent >= 0 ? "positive" : "negative"}`}>
+          <strong>{pnlPercent >= 0 ? "+" : ""}{pnlPercent.toFixed(2)}%</strong>
+          <span>{pnlUsd >= 0 ? "+" : ""}{formatUsd(pnlUsd)}</span>
+        </div>
+        <div className="position-cell">
+          <span>Amount</span>
+          <strong>{formatNumber(position.tokenAmount)}</strong>
+        </div>
+        <div className="platform-pill">{position.platform}</div>
+        <button
+          className={`tier-switch-button ${position.profitTier}`}
+          type="button"
+          title={position.profitTier === "high" ? "Move to low profit worker" : "Move to high profit worker"}
+          onClick={() => setTierPending(position.profitTier === "high" ? "low" : "high")}
+        >
+          {position.profitTier === "high" ? "High" : "Low"}
+        </button>
+        <button
+          className="avg-button"
+          type="button"
+          title="Calculate average down"
+          disabled={avgLoading}
+          onClick={openAverageDown}
+        >
+          {avgLoading ? "…" : <TrendingDown size={14} />}
+        </button>
+        <button
+          className="sell-button"
+          type="button"
+          onClick={() => setSellPending(true)}
+        >
+          Sell
+        </button>
+      </article>
+
+      {sellPending && (
+        <ConfirmModal
+          title={`Sell ${tokenLabel}?`}
+          description="Market sell via Jupiter. Cannot be undone."
+          confirmLabel="Sell"
+          variant="danger"
+          onConfirm={() => {
+            setSellPending(false);
+            onSell?.(position.id);
+          }}
+          onCancel={() => setSellPending(false)}
+        />
+      )}
+
+      {tierPending && (
+        <ConfirmModal
+          title={`Move to ${tierPending.toUpperCase()} tier?`}
+          description={`${tokenLabel} will be monitored by the ${tierPending} profit watcher.`}
+          confirmLabel="Move"
+          onConfirm={() => {
+            const target = tierPending;
+            setTierPending(null);
+            onMoveProfitTier?.(position.id, target);
+          }}
+          onCancel={() => setTierPending(null)}
+        />
+      )}
+
+      {(avgPreview || avgError) && createPortal(
+        <div className="modal-overlay" onClick={() => { setAvgPreview(null); setAvgError(null); }}>
+          <div className="modal-card avg-preview-card" onClick={(e) => e.stopPropagation()}>
+            <p className="modal-title">Average down — {tokenLabel}</p>
+            {avgError ? (
+              <p className="avg-preview-error">{avgError}</p>
+            ) : avgPreview ? (
+              <div className="avg-preview-rows">
+                <div className="avg-preview-row">
+                  <span>Current</span>
+                  <strong className="negative">{(avgPreview.currentMultiplier * 100 - 100).toFixed(1)}%</strong>
+                </div>
+                <div className="avg-preview-row highlight">
+                  <span>Buy</span>
+                  <strong>{formatSol(avgPreview.dcaSol)} SOL</strong>
+                </div>
+                <div className="avg-preview-row">
+                  <span>New avg entry</span>
+                  <strong>{formatUsd(avgPreview.newAvgEntryUsd)}</strong>
+                </div>
+                <div className="avg-preview-divider" />
+                <div className="avg-preview-row">
+                  <span>Break-even at</span>
+                  <strong>+{avgPreview.breakEvenRecoveryPct.toFixed(2)}% from here</strong>
+                </div>
+                <div className="avg-preview-row">
+                  <span>Take-profit at</span>
+                  <strong className="positive">+{avgPreview.takeProfitRecoveryPct.toFixed(2)}% from here</strong>
+                </div>
+              </div>
+            ) : null}
+            <div className="modal-actions">
+              <button className="modal-cancel" type="button" onClick={() => { setAvgPreview(null); setAvgError(null); }}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
   );
 }
 
-export function ClosedPositionRow({ position }: { position: ClosedPosition }) {
+export function ClosedPositionRow({ position, solPriceUsd = 0 }: { position: ClosedPosition; solPriceUsd?: number }) {
   const [copiedMint, setCopiedMint] = useState(false);
-  const { pnlPercent, pnlUsd } = getPnl({
-    ...position,
-    currentPrice: position.exitPrice
-  });
+  const { pnlPercent, pnlUsd } = getClosedPnlUsd(position, solPriceUsd);
   const estimatedOutputSol =
     position.solSpent && position.entryPrice > 0 ? position.solSpent * (position.exitPrice / position.entryPrice) : undefined;
   const actualOutputSol =

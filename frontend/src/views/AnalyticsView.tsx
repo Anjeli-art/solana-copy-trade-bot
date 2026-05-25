@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BarChart3, Download, Wallet } from "lucide-react";
+import { BarChart3, Download, GitFork, Wallet } from "lucide-react";
 import {
   Bar,
   CartesianGrid,
@@ -10,13 +10,14 @@ import {
   XAxis,
   YAxis
 } from "recharts";
-import type { ManualTokenAnalytics, SalesAnalyticsBucket, TraderAnalytics } from "../types";
+import type { ManualTokenAnalytics, MirrorTraderAnalytics, SalesAnalyticsBucket, TraderAnalytics } from "../types";
 import { exportAnalyticsToExcel } from "../utils/analyticsExport";
 import { formatNumber, formatSol, formatUsd, shortAddress } from "../utils/format";
 
 type AnalyticsViewProps = {
   traders: TraderAnalytics[];
   manualTokens: ManualTokenAnalytics[];
+  mirrorTraders: MirrorTraderAnalytics[];
   salesByDay: SalesAnalyticsBucket[];
   salesByHour: SalesAnalyticsBucket[];
 };
@@ -37,8 +38,8 @@ function formatFeeUsd(value: number) {
   return `-${formatUsd(Math.abs(value))}`;
 }
 
-export function AnalyticsView({ traders, manualTokens, salesByDay, salesByHour }: AnalyticsViewProps) {
-  const [mode, setMode] = useState<"trading" | "manual">("trading");
+export function AnalyticsView({ traders, manualTokens, mirrorTraders, salesByDay, salesByHour }: AnalyticsViewProps) {
+  const [mode, setMode] = useState<"trading" | "manual" | "mirror">("trading");
   const [salesBucket, setSalesBucket] = useState<"day" | "hour">("day");
   const salesChartData = salesBucket === "day" ? salesByDay : salesByHour;
   const totalAmountUsd = traders.reduce((sum, trader) => sum + trader.totalAmountUsd, 0);
@@ -55,6 +56,13 @@ export function AnalyticsView({ traders, manualTokens, salesByDay, salesByHour }
   const manualFeeUsd = manualTokens.reduce((sum, token) => sum + (token.totalFeeUsd ?? 0), 0);
   const manualPnlPercent = manualAmountUsd > 0 ? (manualPnlUsd / manualAmountUsd) * 100 : 0;
   const manualTrades = manualTokens.reduce((sum, token) => sum + token.tradeCount, 0);
+  const mirrorSolSpent = mirrorTraders.reduce((sum, t) => sum + t.totalSolSpent, 0);
+  const mirrorSolReceived = mirrorTraders.reduce((sum, t) => sum + t.totalSolReceived, 0);
+  const mirrorPnlSol = mirrorTraders.reduce((sum, t) => sum + t.realizedPnlSol, 0);
+  const mirrorTrades = mirrorTraders.reduce((sum, t) => sum + t.tradeCount, 0);
+  const mirrorWins = mirrorTraders.reduce((sum, t) => sum + t.winCount, 0);
+  const mirrorClosed = mirrorTraders.reduce((sum, t) => sum + t.closedTradeCount, 0);
+  const mirrorWinRate = mirrorClosed > 0 ? (mirrorWins / mirrorClosed) * 100 : 0;
   const salesChartSection = (
     <section className="analytics-section">
       <div className="section-head">
@@ -127,13 +135,15 @@ export function AnalyticsView({ traders, manualTokens, salesByDay, salesByHour }
         <div className="section-head">
           <div>
             <p className="eyebrow">Analytics</p>
-            <h2>{mode === "trading" ? "Trading analytics" : "Manual analytics"}</h2>
+            <h2>
+              {mode === "trading" ? "Trading analytics" : mode === "manual" ? "Manual analytics" : "Mirror analytics"}
+            </h2>
           </div>
           <div className="analytics-mode-actions">
             <button
               className="export-button"
               type="button"
-              onClick={() => exportAnalyticsToExcel(traders, manualTokens, mode)}
+              onClick={() => exportAnalyticsToExcel(traders, manualTokens, mode === "mirror" ? "manual" : mode)}
             >
               <Download size={17} />
               Export
@@ -152,6 +162,13 @@ export function AnalyticsView({ traders, manualTokens, salesByDay, salesByHour }
                 onClick={() => setMode("manual")}
               >
                 Manual
+              </button>
+              <button
+                className={mode === "mirror" ? "active" : ""}
+                type="button"
+                onClick={() => setMode("mirror")}
+              >
+                Mirror
               </button>
             </div>
           </div>
@@ -306,6 +323,87 @@ export function AnalyticsView({ traders, manualTokens, salesByDay, salesByHour }
                   <div className="analytics-cell">
                     <strong>{formatDate(token.lastTradeAt)}</strong>
                     <span>{formatSignedUsd(token.averagePnlUsd)} avg</span>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+      ) : null}
+
+      {mode === "mirror" ? (
+      <section className="analytics-section">
+        <div className="section-head">
+          <div>
+            <p className="eyebrow">Mirror trading only</p>
+            <h2>Mirror trader analytics</h2>
+          </div>
+          <div className="analytics-summary">
+            <span className={mirrorPnlSol >= 0 ? "positive" : "negative"}>
+              {mirrorPnlSol >= 0 ? "+" : ""}{formatSol(mirrorPnlSol)} SOL
+            </span>
+            <div className="analytics-summary-breakdown">
+              <small className="mirror-sol-detail">{formatSol(mirrorSolSpent)} SOL spent</small>
+              <small className="mirror-sol-detail">{formatSol(mirrorSolReceived)} SOL received</small>
+            </div>
+            <strong>{mirrorWinRate.toFixed(0)}% win rate / {formatNumber(mirrorTrades)} trades</strong>
+          </div>
+        </div>
+        {mirrorTraders.length === 0 ? (
+          <div className="empty-state">No mirror trading activity yet</div>
+        ) : (
+          <div className="analytics-table">
+            <div className="analytics-row analytics-head">
+              <span>Trader</span>
+              <span>Trades</span>
+              <span>PnL (SOL)</span>
+              <span>Win rate</span>
+              <span>SOL spent</span>
+              <span>SOL received</span>
+              <span>Last trade</span>
+            </div>
+            {mirrorTraders.map((trader) => {
+              const pnlClass = trader.realizedPnlSol >= 0 ? "positive" : "negative";
+
+              return (
+                <article className="analytics-row mirror-analytics-row" key={trader.trader}>
+                  <div className="analytics-trader">
+                    <div className="wallet-icon">
+                      <GitFork size={18} />
+                    </div>
+                    <div>
+                      <strong title={trader.trader}>{trader.label || shortAddress(trader.trader)}</strong>
+                      <span title={trader.trader}>{trader.trader}</span>
+                    </div>
+                  </div>
+                  <div className="analytics-cell">
+                    <strong>{formatNumber(trader.tradeCount)}</strong>
+                    <span>
+                      {formatNumber(trader.activeTradeCount)} open / {formatNumber(trader.closedTradeCount)} closed
+                    </span>
+                  </div>
+                  <div className={`analytics-cell ${pnlClass}`}>
+                    <strong>
+                      {trader.realizedPnlSol >= 0 ? "+" : ""}{formatSol(trader.realizedPnlSol)} SOL
+                    </strong>
+                    <span>closed trades only</span>
+                  </div>
+                  <div className="analytics-cell">
+                    <strong>{trader.closedTradeCount > 0 ? `${trader.winRate.toFixed(0)}%` : "-"}</strong>
+                    <span>{formatNumber(trader.winCount)} win / {formatNumber(trader.lossCount)} loss</span>
+                  </div>
+                  <div className="analytics-cell">
+                    <strong>{formatSol(trader.totalSolSpent)} SOL</strong>
+                    <span>{formatNumber(trader.tradeCount)} total buys</span>
+                  </div>
+                  <div className="analytics-cell">
+                    <strong>{formatSol(trader.totalSolReceived)} SOL</strong>
+                    <span>{formatNumber(trader.closedTradeCount)} closed</span>
+                  </div>
+                  <div className="analytics-cell">
+                    <strong>{formatDate(trader.lastTradeAt)}</strong>
+                    <span>{formatDate(trader.firstTradeAt)} first</span>
                   </div>
                 </article>
               );

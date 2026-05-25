@@ -2,6 +2,7 @@ import path from "path";
 import dotenv from "dotenv";
 import { Connection, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { readState } from "../state/store";
+import { withRpcLimit } from "../utils/rpcLimiter";
 
 dotenv.config({
   path: path.resolve(__dirname, "../../helpers/.env")
@@ -10,8 +11,41 @@ dotenv.config({
 const WSOL_MINT = "So11111111111111111111111111111111111111112";
 const DEFAULT_POLL_INTERVAL_MS = 5000;
 const DEFAULT_SIGNATURE_LIMIT = 20;
+const MAX_SEEN_SIGNATURES_PER_TRADER = 500;
 
 type TokenBalanceByMint = Map<string, number>;
+
+type ParsedTokenBalance = {
+  owner?: string;
+  mint?: string;
+  uiTokenAmount?: {
+    uiAmount?: number | null;
+    amount?: string;
+    decimals?: number;
+  };
+};
+
+type ParsedAccountKey = {
+  pubkey?: {
+    toBase58?: () => string;
+  };
+};
+
+type ParsedMonitorTransaction = {
+  slot: number;
+  blockTime?: number | null;
+  transaction: {
+    message: {
+      accountKeys?: ParsedAccountKey[];
+    };
+  };
+  meta?: {
+    preBalances?: number[];
+    postBalances?: number[];
+    preTokenBalances?: ParsedTokenBalance[] | null;
+    postTokenBalances?: ParsedTokenBalance[] | null;
+  } | null;
+};
 
 type DetectedTraderBuy = {
   trader: string;
@@ -45,7 +79,7 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function toTokenAmount(balance: any) {
+function toTokenAmount(balance: ParsedTokenBalance) {
   const amount = balance?.uiTokenAmount?.uiAmount;
   if (typeof amount === "number" && Number.isFinite(amount)) {
     return amount;
@@ -56,7 +90,7 @@ function toTokenAmount(balance: any) {
   return rawAmount / 10 ** decimals;
 }
 
-function collectTokenBalancesByMint(balances: any[] | null | undefined, owner: string): TokenBalanceByMint {
+function collectTokenBalancesByMint(balances: ParsedTokenBalance[] | null | undefined, owner: string): TokenBalanceByMint {
   const byMint: TokenBalanceByMint = new Map();
 
   for (const balance of balances || []) {
@@ -70,9 +104,9 @@ function collectTokenBalancesByMint(balances: any[] | null | undefined, owner: s
   return byMint;
 }
 
-function getSolChangeForTrader(transaction: any, trader: string) {
+function getSolChangeForTrader(transaction: ParsedMonitorTransaction, trader: string) {
   const keys = transaction.transaction.message.accountKeys || [];
-  const accountIndex = keys.findIndex((account: any) => account.pubkey?.toBase58?.() === trader);
+  const accountIndex = keys.findIndex((account) => account.pubkey?.toBase58?.() === trader);
 
   if (accountIndex < 0) {
     return 0;
@@ -83,7 +117,7 @@ function getSolChangeForTrader(transaction: any, trader: string) {
   return (post - pre) / LAMPORTS_PER_SOL;
 }
 
-function detectTraderBuys(transaction: any, trader: string, signature: string): DetectedTraderBuy[] {
+function detectTraderBuys(transaction: ParsedMonitorTransaction, trader: string, signature: string): DetectedTraderBuy[] {
   if (!transaction.meta) {
     return [];
   }
@@ -121,32 +155,49 @@ async function processTraderSignatures(
   seenSignatures: Set<string>,
   lastSeenSignature?: string
 ) {
-  const signatures = await connection.getSignaturesForAddress(new PublicKey(trader), {
-    limit: getSignatureLimit(),
-    until: lastSeenSignature
-  });
+  const signatures = await withRpcLimit(() =>
+    connection.getSignaturesForAddress(new PublicKey(trader), {
+      limit: getSignatureLimit(),
+      until: lastSeenSignature
+    })
+  );
 
-  for (const signatureInfo of signatures.reverse()) {
-    if (seenSignatures.has(signatureInfo.signature)) {
-      continue;
+  const newSignatures = signatures
+    .reverse()
+    .filter((s) => !seenSignatures.has(s.signature) && !s.err);
+
+  for (const s of newSignatures) {
+    seenSignatures.add(s.signature);
+  }
+
+  // Prune oldest entries to prevent unbounded memory growth
+  if (seenSignatures.size > MAX_SEEN_SIGNATURES_PER_TRADER) {
+    const toDelete = seenSignatures.size - MAX_SEEN_SIGNATURES_PER_TRADER;
+    let deleted = 0;
+    for (const sig of seenSignatures) {
+      if (deleted >= toDelete) break;
+      seenSignatures.delete(sig);
+      deleted++;
     }
+  }
 
-    seenSignatures.add(signatureInfo.signature);
+  // Fetch all new transactions in parallel, rate-limited by RPC_MAX_CONCURRENT
+  const transactions = await Promise.all(
+    newSignatures.map((s) =>
+      withRpcLimit(() =>
+        connection.getParsedTransaction(s.signature, {
+          commitment: "confirmed",
+          maxSupportedTransactionVersion: 0
+        })
+      )
+    )
+  );
 
-    if (signatureInfo.err) {
-      continue;
-    }
+  for (let i = 0; i < newSignatures.length; i++) {
+    const transaction = transactions[i];
+    if (!transaction) continue;
 
-    const transaction = await connection.getParsedTransaction(signatureInfo.signature, {
-      commitment: "confirmed",
-      maxSupportedTransactionVersion: 0
-    });
-
-    if (!transaction) {
-      continue;
-    }
-
-    const buys = detectTraderBuys(transaction, trader, signatureInfo.signature);
+    const buys = detectTraderBuys(transaction, trader, newSignatures[i].signature);
     for (const buy of buys) {
       console.log(
         JSON.stringify({
@@ -180,41 +231,51 @@ export async function startFreeRpcTraderMonitor() {
     const state = await readState();
     const traders = state.trackedTraders.filter((trader) => trader.enabled);
 
-    for (const trader of traders) {
-      try {
-        const seenSignatures = seenSignaturesByTrader.get(trader.address) || new Set<string>();
-        seenSignaturesByTrader.set(trader.address, seenSignatures);
+    // Poll all traders in parallel — last trader no longer waits for all previous ones
+    await Promise.allSettled(
+      traders.map(async (trader) => {
+        try {
+          const seenSignatures = seenSignaturesByTrader.get(trader.address) || new Set<string>();
+          seenSignaturesByTrader.set(trader.address, seenSignatures);
 
-        if (!includeHistory && !lastSeenByTrader.has(trader.address)) {
-          const latest = await connection.getSignaturesForAddress(new PublicKey(trader.address), { limit: 1 });
-          lastSeenByTrader.set(trader.address, latest[0]?.signature);
-          continue;
+          if (!includeHistory && !lastSeenByTrader.has(trader.address)) {
+            const latest = await withRpcLimit(() =>
+              connection.getSignaturesForAddress(new PublicKey(trader.address), { limit: 1 })
+            );
+            lastSeenByTrader.set(trader.address, latest[0]?.signature);
+            return;
+          }
+
+          const lastSeenSignature = await processTraderSignatures(
+            connection,
+            trader.address,
+            seenSignatures,
+            lastSeenByTrader.get(trader.address)
+          );
+
+          lastSeenByTrader.set(trader.address, lastSeenSignature);
+        } catch (error) {
+          console.error(
+            JSON.stringify({
+              event: "TRADER_MONITOR_ERROR",
+              trader: trader.address,
+              message: error instanceof Error ? error.message : "Unknown monitor error"
+            })
+          );
         }
-
-        const lastSeenSignature = await processTraderSignatures(
-          connection,
-          trader.address,
-          seenSignatures,
-          lastSeenByTrader.get(trader.address)
-        );
-
-        lastSeenByTrader.set(trader.address, lastSeenSignature);
-      } catch (error) {
-        console.error(
-          JSON.stringify({
-            event: "TRADER_MONITOR_ERROR",
-            trader: trader.address,
-            message: error instanceof Error ? error.message : "Unknown monitor error"
-          })
-        );
-      }
-    }
+      })
+    );
 
     await sleep(pollIntervalMs);
   }
 }
 
 if (require.main === module) {
+  process.on("unhandledRejection", (reason) => {
+    console.error(JSON.stringify({ event: "MONITOR_UNHANDLED_REJECTION", message: String(reason) }));
+    process.exit(1);
+  });
+
   startFreeRpcTraderMonitor().catch((error) => {
     console.error(error);
     process.exit(1);

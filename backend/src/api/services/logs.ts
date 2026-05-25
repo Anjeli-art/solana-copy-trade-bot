@@ -107,3 +107,13 @@ export function deleteBotLog(id: string) {
   const result = db.prepare("DELETE FROM bot_logs WHERE id = ?").run(id);
   return result.changes > 0;
 }
+
+export function deleteBotLogsByEvent(event: string) {
+  const result = db.prepare("DELETE FROM bot_logs WHERE event = ?").run(event);
+  return result.changes;
+}
+
+export function deleteAllBotLogs() {
+  const result = db.prepare("DELETE FROM bot_logs").run();
+  return result.changes;
+}

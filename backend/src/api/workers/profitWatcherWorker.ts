@@ -1,6 +1,7 @@
 import path from "path";
 import dotenv from "dotenv";
-import { executeJupiterSell, getJupiterTokenPriceUsd, isJupiterRateLimitError } from "../services/jupiterSwap";
+import { executeJupiterSell, getJupiterSellQuote, isJupiterRateLimitError } from "../services/jupiterSwap";
+import type { JupiterQuote } from "../services/jupiterSwap";
 import { createBotLog } from "../services/logs";
 import { getPositionCloseSignal } from "../services/positionRules";
 import { refreshWalletBalance } from "../services/walletBalance";
@@ -45,11 +46,20 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function getPnlUsd(position: ActivePosition, exitPriceUsd: number) {
+function getPnlUsd(
+  position: ActivePosition,
+  exitPriceUsd: number,
+  sellActualSolChange?: number,
+  solPriceUsd?: number
+) {
+  // Prefer actual on-chain SOL delta — includes fees, immune to bad entry/exit prices.
+  if (sellActualSolChange !== undefined && position.buyActualSolChange !== undefined && solPriceUsd) {
+    return (sellActualSolChange + position.buyActualSolChange) * solPriceUsd;
+  }
+  // Fallback to price-based when actual data missing.
   if (position.entryPriceUsd <= 0) {
     return 0;
   }
-
   return position.amountUsd * (exitPriceUsd / position.entryPriceUsd) - position.amountUsd;
 }
 
@@ -61,9 +71,10 @@ async function closePositionAfterSell(
   position: ActivePosition,
   exitPriceUsd: number,
   closeReason: "take-profit" | "stop-loss" | "timeout",
+  solPriceUsd: number,
   sellResult?: Awaited<ReturnType<typeof executeJupiterSell>>
 ) {
-  const pnlUsd = getPnlUsd(position, exitPriceUsd);
+  const pnlUsd = getPnlUsd(position, exitPriceUsd, sellResult?.actualSolChange, solPriceUsd);
 
   await closeActivePositionInStore(
     {
@@ -71,6 +82,7 @@ async function closePositionAfterSell(
       tokenSymbol: position.tokenSymbol,
       tokenMint: position.tokenMint,
       sourceTrader: position.sourceTrader,
+      sourceSignature: position.sourceSignature,
       buyPlatform: position.buyPlatform,
       buyTx: position.buyTx,
       entryPriceUsd: position.entryPriceUsd,
@@ -105,7 +117,7 @@ async function inspectPosition(
   positionTimeoutMinutes: number,
   solPriceUsd: number
 ) {
-  if (position.status !== "open" || position.entryPriceUsd <= 0 || position.tokenAmount <= 0) {
+  if (position.status !== "open" || position.tokenAmount <= 0) {
     return;
   }
 
@@ -114,9 +126,13 @@ async function inspectPosition(
     return;
   }
 
-  let currentPriceUsd: number;
+  let quotedOutSol: number;
+  let priceQuoteResponse: JupiterQuote | undefined;
   try {
-    currentPriceUsd = await getJupiterTokenPriceUsd(position.tokenMint, position.tokenAmount, solPriceUsd);
+    ({ quotedOutSol, quoteResponse: priceQuoteResponse } = await getJupiterSellQuote(
+      position.tokenMint,
+      position.tokenAmount
+    ));
   } catch (error) {
     if (!isJupiterRateLimitError(error)) {
       throw error;
@@ -141,14 +157,19 @@ async function inspectPosition(
     return;
   }
 
-  if (currentPriceUsd <= 0) {
+  if (quotedOutSol <= 0) {
     return;
   }
 
   jupiterPriceBackoffUntilByToken.delete(position.tokenMint);
 
+  const currentPriceUsd = solPriceUsd > 0 ? (quotedOutSol * solPriceUsd) / position.tokenAmount : 0;
   await updatePositionPrice(position, currentPriceUsd);
-  const multiplier = currentPriceUsd / position.entryPriceUsd;
+  const spentSol = Math.abs(position.buyActualSolChange ?? position.solSpent ?? 0);
+  if (spentSol <= 0) {
+    return;
+  }
+  const multiplier = quotedOutSol / spentSol;
   const positionAgeMs = Date.now() - new Date(position.openedAt).getTime();
 
   console.log(
@@ -159,6 +180,8 @@ async function inspectPosition(
       profitTier: workerTier,
       entryPriceUsd: position.entryPriceUsd,
       currentPriceUsd,
+      quotedOutSol,
+      spentSol,
       multiplier,
       targetMultiplier,
       stopLossMultiplier,
@@ -196,6 +219,8 @@ async function inspectPosition(
     metadata: {
       entryPriceUsd: position.entryPriceUsd,
       currentPriceUsd,
+      quotedOutSol,
+      spentSol,
       multiplier,
       targetMultiplier,
       stopLossMultiplier,
@@ -208,7 +233,7 @@ async function inspectPosition(
 
   let result: Awaited<ReturnType<typeof executeJupiterSell>>;
   try {
-    result = await executeJupiterSell(position.tokenMint, position.tokenAmount);
+    result = await executeJupiterSell(position.tokenMint, position.tokenAmount, priceQuoteResponse);
   } catch (error) {
     await patchActivePosition(position.id, { status: "open", currentPriceUsd });
     createBotLog({
@@ -239,6 +264,7 @@ async function inspectPosition(
     { ...position, currentPriceUsd, status: "selling" },
     currentPriceUsd,
     closeReason,
+    solPriceUsd,
     result
   );
 
@@ -295,6 +321,11 @@ export async function startProfitWatcherWorker() {
   console.log(`Profit watcher started. Tier: ${workerTier}. Poll interval: ${pollIntervalMs}ms`);
   console.log(`Stale selling recovery: ${sellingRecoveryMs}ms`);
   console.log("Real multi-platform sell execution through Jupiter: enabled");
+  createBotLog({
+    event: "PROFIT_WORKER_STARTED",
+    message: `Profit watcher started. Tier: ${workerTier}. Poll: ${pollIntervalMs}ms`,
+    metadata: { tier: workerTier, pollIntervalMs, sellingRecoveryMs }
+  });
 
   while (true) {
     try {
@@ -358,8 +389,22 @@ export async function startProfitWatcherWorker() {
 }
 
 if (require.main === module) {
+  process.on("unhandledRejection", (reason) => {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    console.error(JSON.stringify({ event: "PROFIT_WORKER_UNHANDLED_REJECTION", message }));
+    createBotLog({ level: "error", event: "PROFIT_WORKER_FATAL", message });
+    process.exit(1);
+  });
+
   startProfitWatcherWorker().catch((error) => {
+    const message = error instanceof Error ? error.message : "Profit watcher fatal crash";
     console.error(error);
+    createBotLog({
+      level: "error",
+      event: "PROFIT_WORKER_FATAL",
+      message,
+      metadata: { stack: error instanceof Error ? error.stack?.slice(0, 1000) : undefined }
+    });
     process.exit(1);
   });
 }

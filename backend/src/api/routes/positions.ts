@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "http";
 import { randomUUID } from "crypto";
 import { readJsonBody } from "../http/request";
 import { sendError, sendJson } from "../http/response";
+import { getJupiterSellQuote } from "../services/jupiterSwap";
 import {
   addActivePosition,
   closeActivePosition as closeActivePositionInStore,
@@ -41,6 +42,7 @@ function createPosition(body: PositionBody): ActivePosition | null {
     tokenSymbol: body.tokenSymbol.slice(0, 24),
     tokenMint: body.tokenMint,
     sourceTrader: body.sourceTrader,
+    sourceSignature: body.sourceSignature,
     buyPlatform: normalizePlatformName(body.buyPlatform),
     buyTx: body.buyTx,
     entryPriceUsd: body.entryPriceUsd,
@@ -69,7 +71,7 @@ function closePosition(position: ActivePosition, body: ClosePositionBody): Close
   }
 
   const closeReason = body.closeReason || "manual";
-  if (!["take-profit", "manual", "stop-loss", "timeout"].includes(closeReason)) {
+  if (!["take-profit", "manual", "stop-loss", "timeout", "deleted"].includes(closeReason)) {
     return null;
   }
 
@@ -78,6 +80,7 @@ function closePosition(position: ActivePosition, body: ClosePositionBody): Close
     tokenSymbol: position.tokenSymbol,
     tokenMint: position.tokenMint,
     sourceTrader: position.sourceTrader,
+    sourceSignature: position.sourceSignature,
     buyPlatform: position.buyPlatform,
     buyTx: position.buyTx,
     entryPriceUsd: position.entryPriceUsd,
@@ -107,6 +110,83 @@ export async function handleActivePositions(
   if (request.method === "GET" && !id) {
     const state = await readState();
     sendJson(response, 200, { data: state.activePositions });
+    return;
+  }
+
+  if (request.method === "GET" && id && action === "average-down") {
+    const state = await readState();
+    const position = state.activePositions.find((p) => p.id === id);
+
+    if (!position) {
+      sendError(response, 404, "POSITION_NOT_FOUND", "Position not found");
+      return;
+    }
+
+    const spentSol = Math.abs(position.buyActualSolChange ?? position.solSpent ?? 0);
+    if (spentSol <= 0) {
+      sendError(response, 400, "INVALID_POSITION", "Position has no recorded SOL cost");
+      return;
+    }
+
+    let quotedOutSol: number;
+    try {
+      ({ quotedOutSol } = await getJupiterSellQuote(position.tokenMint, position.tokenAmount));
+    } catch {
+      sendError(response, 502, "PRICE_UNAVAILABLE", "Unable to get current price from Jupiter");
+      return;
+    }
+
+    if (quotedOutSol <= 0) {
+      sendError(response, 422, "PRICE_UNAVAILABLE", "Jupiter returned zero price for token");
+      return;
+    }
+
+    const T = state.settings.profitTargetMultiplier;
+    const currentMultiplier = quotedOutSol / spentSol;
+    const dcaSol = (spentSol - T * quotedOutSol) / (T - 1);
+
+    if (dcaSol <= 0) {
+      if (currentMultiplier >= T) {
+        sendError(response, 400, "NO_DCA_NEEDED", `Position is already at take-profit (${(currentMultiplier * 100 - 100).toFixed(1)}% up)`);
+      } else if (currentMultiplier >= 1) {
+        sendError(response, 400, "NO_DCA_NEEDED", `Position is currently profitable — sell or wait for take-profit`);
+      } else {
+        const dropPct = (1 - currentMultiplier) * 100;
+        const neededPct = (1 - 1 / T) * 100;
+        sendError(response, 400, "NO_DCA_NEEDED", `Position is only down ${dropPct.toFixed(1)}% — averaging makes sense below ${neededPct.toFixed(1)}% loss`);
+      }
+      return;
+    }
+
+    // Additional tokens received at current price
+    const additionalTokens = (dcaSol / quotedOutSol) * position.tokenAmount;
+    const newTokenAmount = position.tokenAmount + additionalTokens;
+    const newSolSpent = spentSol + dcaSol;
+
+    // New average entry price in USD
+    const solPriceUsd = state.wallet.solPriceUsd;
+    const newAvgEntryUsd = solPriceUsd > 0 && newTokenAmount > 0
+      ? (newSolSpent * solPriceUsd) / newTokenAmount
+      : 0;
+
+    // After DCA: multiplier at current price = 1/T
+    // Break-even when price rises by T from current (e.g. +2%)
+    // Take-profit when price rises by T² from current (e.g. +4.04%)
+    const breakEvenRecoveryPct = (T - 1) * 100;
+    const takeProfitRecoveryPct = (T * T - 1) * 100;
+
+    sendJson(response, 200, {
+      data: {
+        dcaSol,
+        currentMultiplier,
+        targetMultiplier: T,
+        newAvgEntryUsd,
+        breakEvenRecoveryPct,
+        takeProfitRecoveryPct,
+        newSolSpent,
+        newTokenAmount
+      }
+    });
     return;
   }
 

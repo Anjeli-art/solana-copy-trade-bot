@@ -15,6 +15,7 @@ import { isTokenBlacklisted } from "../services/tokenBlacklist";
 import { getTokenMetadata } from "../services/tokenMetadata";
 import { refreshWalletBalance } from "../services/walletBalance";
 import { addActivePosition, readState } from "../state/store";
+import { withRpcLimit } from "../utils/rpcLimiter";
 
 dotenv.config({
   path: path.resolve(__dirname, "../../helpers/.env")
@@ -50,6 +51,13 @@ function now() {
   return new Date().toISOString();
 }
 
+function isCopyTradingEnabled() {
+  const row = db.prepare("SELECT value FROM trading_runtime WHERE key = ?").get("copy_enabled") as
+    | { value: string }
+    | undefined;
+  return row?.value === "true";
+}
+
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unknown RPC request error";
 }
@@ -81,11 +89,24 @@ function isProcessed(signature: string) {
   return Boolean(row);
 }
 
+function claimProcessedPending(input: { signature: string; trader: string; tokenMint?: string }) {
+  const result = db
+    .prepare(
+      `
+        INSERT OR IGNORE INTO processed_signatures (signature, trader, token_mint, action, status, message, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `
+    )
+    .run(input.signature, input.trader, input.tokenMint || null, "copy-buy", "pending", "Buy detected", now());
+
+  return result.changes > 0;
+}
+
 function markProcessed(input: {
   signature: string;
   trader: string;
   tokenMint?: string;
-  status: "dry-run" | "success" | "failed" | "skipped";
+  status: "dry-run" | "success" | "failed" | "skipped" | "pending" | "tx_sent";
   message?: string;
 }) {
   db.prepare(
@@ -100,8 +121,52 @@ function markProcessed(input: {
   ).run(input.signature, input.trader, input.tokenMint || null, "copy-buy", input.status, input.message || null, now());
 }
 
+function claimTokenBuy(input: { tokenMint: string; signature: string; trader: string }) {
+  const savedAt = now();
+  // Only retry if the previous failure was a network/connectivity error (Jupiter down).
+  // Simulation failures, bad tokens, insufficient liquidity etc. should stay blocked.
+  const existing = db
+    .prepare("SELECT status, message FROM copy_buy_token_locks WHERE token_mint = ?")
+    .get(input.tokenMint) as { status: string; message: string | null } | undefined;
+
+  if (existing?.status === "failed") {
+    const msg = (existing.message || "").toLowerCase();
+    const isNetworkError = msg.includes("fetch failed") || msg.includes("network") || msg.includes("econnrefused") || msg.includes("timeout");
+    if (isNetworkError) {
+      db.prepare("DELETE FROM copy_buy_token_locks WHERE token_mint = ?").run(input.tokenMint);
+    }
+  }
+
+  const result = db
+    .prepare(
+      `
+        INSERT OR IGNORE INTO copy_buy_token_locks (
+          token_mint, source_signature, trader, status, message, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `
+    )
+    .run(input.tokenMint, input.signature, input.trader, "pending", "Copy buy in progress", savedAt, savedAt);
+
+  return result.changes > 0;
+}
+
+function updateTokenBuyLock(input: { tokenMint: string; status: "success" | "failed" | "tx_sent"; message?: string }) {
+  db.prepare(
+    `
+      UPDATE copy_buy_token_locks
+      SET status = ?, message = ?, updated_at = ?
+      WHERE token_mint = ?
+    `
+  ).run(input.status, input.message || null, now(), input.tokenMint);
+}
+
 async function handleDetectedBuy(buy: DetectedTraderBuy) {
-  if (isProcessed(buy.signature)) {
+  if (!isCopyTradingEnabled()) {
+    return;
+  }
+
+  if (!claimProcessedPending({ signature: buy.signature, trader: buy.trader, tokenMint: buy.tokenMint })) {
     return;
   }
 
@@ -161,6 +226,18 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
   }
 
   try {
+    if (!isCopyTradingEnabled()) {
+      const message = "Buy skipped: copy trading was stopped before wallet check";
+      markProcessed({
+        signature: buy.signature,
+        trader: buy.trader,
+        tokenMint: buy.tokenMint,
+        status: "skipped",
+        message
+      });
+      return;
+    }
+
     const wallet = await refreshWalletBalance(state.wallet);
     if (wallet.solBalance < amountSol + FEE_RESERVE_SOL) {
       const message = `Buy skipped: wallet balance ${wallet.solBalance.toFixed(6)} SOL is below required ${(amountSol + FEE_RESERVE_SOL).toFixed(6)} SOL`;
@@ -182,6 +259,30 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
           solBalance: wallet.solBalance,
           buyAmountSol: amountSol,
           feeReserveSol: FEE_RESERVE_SOL
+        }
+      });
+      return;
+    }
+
+    if (!claimTokenBuy({ tokenMint: buy.tokenMint, signature: buy.signature, trader: buy.trader })) {
+      const message = `Buy skipped: copy buy lock already exists for ${buy.tokenMint}`;
+      markProcessed({
+        signature: buy.signature,
+        trader: buy.trader,
+        tokenMint: buy.tokenMint,
+        status: "skipped",
+        message
+      });
+      createBotLog({
+        level: "warn",
+        event: "BUY_SKIPPED_TOKEN_LOCKED",
+        message,
+        trader: buy.trader,
+        tokenMint: buy.tokenMint,
+        signature: buy.signature,
+        metadata: {
+          traderSpentSol: buy.spentSol,
+          platform: buy.platform
         }
       });
       return;
@@ -210,9 +311,65 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
       source: "copy-trade"
     });
 
-    const result = await executeJupiterBuy(buy.tokenMint, amountSol);
+    markProcessed({
+      signature: buy.signature,
+      trader: buy.trader,
+      tokenMint: buy.tokenMint,
+      status: "pending",
+      message: "Buy in progress"
+    });
+
+    if (!isCopyTradingEnabled()) {
+      const message = "Buy skipped: copy trading was stopped before Jupiter buy";
+      markProcessed({
+        signature: buy.signature,
+        trader: buy.trader,
+        tokenMint: buy.tokenMint,
+        status: "skipped",
+        message
+      });
+      updateTokenBuyLock({
+        tokenMint: buy.tokenMint,
+        status: "failed",
+        message
+      });
+      createBotLog({
+        level: "warn",
+        event: "BUY_SKIPPED_COPY_STOPPED",
+        message,
+        trader: buy.trader,
+        tokenMint: buy.tokenMint,
+        signature: buy.signature,
+        metadata: {
+          traderSpentSol: buy.spentSol,
+          platform: buy.platform
+        }
+      });
+      return;
+    }
+
+    const result = await executeJupiterBuy(buy.tokenMint, amountSol, {
+      shouldSend: isCopyTradingEnabled,
+      onSignature: (signature) => {
+        markProcessed({
+          signature: buy.signature,
+          trader: buy.trader,
+          tokenMint: buy.tokenMint,
+          status: "tx_sent",
+          message: signature
+        });
+        updateTokenBuyLock({
+          tokenMint: buy.tokenMint,
+          status: "tx_sent",
+          message: signature
+        });
+      }
+    });
     const tokenAmount = result.tokenAmountDelta || 0;
-    const amountUsd = amountSol * wallet.solPriceUsd;
+    // Use actual SOL spent from the transaction — not the requested amount.
+    // Requested amount can be rounded/slightly off; actual amount is ground truth.
+    const actualSolSpent = result.actualSolChange !== undefined ? Math.abs(result.actualSolChange) : amountSol;
+    const amountUsd = actualSolSpent * wallet.solPriceUsd;
     const entryPriceUsd = tokenAmount > 0 && amountUsd > 0 ? amountUsd / tokenAmount : 0;
     const tokenMetadata = await getTokenMetadata(buy.tokenMint).catch(() => undefined);
 
@@ -223,12 +380,13 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
         tokenMint: buy.tokenMint,
         tokenImage: tokenMetadata?.image,
         sourceTrader: buy.trader,
+        sourceSignature: buy.signature,
         buyPlatform: buy.platform,
         buyTx: result.signature,
         entryPriceUsd,
         currentPriceUsd: entryPriceUsd,
         amountUsd,
-        solSpent: amountSol,
+        solSpent: actualSolSpent,
         buyNetworkFeeSol: result.networkFeeSol,
         buyPriorityFeeSol: result.priorityFeeSol,
         buyQuotedOutAmount: result.quotedOutAmount,
@@ -244,6 +402,11 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
     markProcessed({
       signature: buy.signature,
       trader: buy.trader,
+      tokenMint: buy.tokenMint,
+      status: "success",
+      message: result.signature
+    });
+    updateTokenBuyLock({
       tokenMint: buy.tokenMint,
       status: "success",
       message: result.signature
@@ -283,9 +446,39 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown copy trade error";
+    const existingLock = db
+      .prepare("SELECT status, message FROM copy_buy_token_locks WHERE token_mint = ?")
+      .get(buy.tokenMint) as { status: string; message: string | null } | undefined;
+    if (existingLock?.status === "tx_sent" && existingLock.message) {
+      markProcessed({
+        signature: buy.signature,
+        trader: buy.trader,
+        tokenMint: buy.tokenMint,
+        status: "tx_sent",
+        message: existingLock.message
+      });
+      createBotLog({
+        level: "error",
+        event: "COPY_BUY_POSITION_WRITE_FAILED",
+        message: `${message}. Buy tx was already sent and will be recovered from chain.`,
+        trader: buy.trader,
+        tokenMint: buy.tokenMint,
+        signature: existingLock.message,
+        metadata: {
+          sourceSignature: buy.signature,
+          traderSpentSol: buy.spentSol
+        }
+      });
+      return;
+    }
     markProcessed({
       signature: buy.signature,
       trader: buy.trader,
+      tokenMint: buy.tokenMint,
+      status: "failed",
+      message
+    });
+    updateTokenBuyLock({
       tokenMint: buy.tokenMint,
       status: "failed",
       message
@@ -323,10 +516,12 @@ async function processTraderSignatures(
   const wallet = await refreshWalletBalance(state.wallet);
   let signatures;
   try {
-    signatures = await connection.getSignaturesForAddress(new PublicKey(trader), {
-      limit: getSignatureLimit(),
-      until: lastSeenSignature
-    });
+    signatures = await withRpcLimit(() =>
+      connection.getSignaturesForAddress(new PublicKey(trader), {
+        limit: getSignatureLimit(),
+        until: lastSeenSignature
+      })
+    );
   } catch (error) {
     logRpcRequestFailed({
       method: "getSignaturesForAddress",
@@ -337,33 +532,42 @@ async function processTraderSignatures(
     throw error;
   }
 
-  for (const signatureInfo of signatures.reverse()) {
-    if (signatureInfo.err || isProcessed(signatureInfo.signature)) {
-      continue;
-    }
+  // Filter to new, unprocessed, non-error signatures
+  const newSignatures = signatures
+    .reverse()
+    .filter((s) => !s.err && !isProcessed(s.signature));
 
-    let transaction;
-    try {
-      transaction = await connection.getParsedTransaction(signatureInfo.signature, {
-        commitment: "confirmed",
-        maxSupportedTransactionVersion: 0
-      });
-    } catch (error) {
+  // Fetch all transactions in parallel, rate-limited by RPC_MAX_CONCURRENT
+  const transactions = await Promise.allSettled(
+    newSignatures.map((s) =>
+      withRpcLimit(() =>
+        connection.getParsedTransaction(s.signature, {
+          commitment: "confirmed",
+          maxSupportedTransactionVersion: 0
+        })
+      )
+    )
+  );
+
+  // Process results sequentially to avoid buy race conditions
+  for (let i = 0; i < newSignatures.length; i++) {
+    const result = transactions[i];
+    if (result.status === "rejected") {
       logRpcRequestFailed({
         method: "getParsedTransaction",
         trader,
-        signature: signatureInfo.signature,
+        signature: newSignatures[i].signature,
         endpoint: getRpcEndpoint(),
-        error
+        error: result.reason
       });
-      throw error;
-    }
-
-    if (!transaction) {
       continue;
     }
 
-    const unmatchedBuyLikes = detectUnmatchedTraderBuyLikes(transaction, trader, signatureInfo.signature);
+    const transaction = result.value;
+    if (!transaction) continue;
+
+    const sig = newSignatures[i].signature;
+    const unmatchedBuyLikes = detectUnmatchedTraderBuyLikes(transaction, trader, sig);
     for (const buyLike of unmatchedBuyLikes) {
       createBotLog({
         level: "warn",
@@ -384,7 +588,7 @@ async function processTraderSignatures(
       });
     }
 
-    const buys = detectTraderPlatformBuys(transaction, trader, signatureInfo.signature, wallet.solPriceUsd);
+    const buys = detectTraderPlatformBuys(transaction, trader, sig, wallet.solPriceUsd);
     for (const buy of buys) {
       await handleDetectedBuy(buy);
     }
@@ -407,17 +611,33 @@ export async function startCopyTradeWorker() {
   console.log(`Copy-trade worker started. Poll interval: ${pollIntervalMs}ms`);
   console.log(`Historical signatures on startup: ${includeHistory ? "enabled" : "skipped"}`);
   console.log("Real multi-platform buy execution through Jupiter: enabled");
+  createBotLog({
+    event: "COPY_WORKER_STARTED",
+    message: `Copy-trade worker started. Poll: ${pollIntervalMs}ms, history: ${includeHistory ? "on" : "off"}`,
+    metadata: { pollIntervalMs, includeHistory }
+  });
 
   while (true) {
+    if (!isCopyTradingEnabled()) {
+      console.log("Copy-trade worker stopped because copy trading is disabled");
+      createBotLog({
+        event: "COPY_WORKER_STOPPED",
+        message: "Copy-trade worker stopped: copy trading disabled"
+      });
+      return;
+    }
+
     const state = await readState();
     const traders = state.trackedTraders.filter((trader) => trader.enabled);
 
-    for (const trader of traders) {
+    await Promise.all(traders.map(async (trader) => {
       try {
         if (!includeHistory && !lastSeenByTrader.has(trader.address)) {
           let latest;
           try {
-            latest = await connection.getSignaturesForAddress(new PublicKey(trader.address), { limit: 1 });
+            latest = await withRpcLimit(() =>
+              connection.getSignaturesForAddress(new PublicKey(trader.address), { limit: 1 })
+            );
           } catch (error) {
             logRpcRequestFailed({
               method: "getSignaturesForAddress",
@@ -428,7 +648,7 @@ export async function startCopyTradeWorker() {
             throw error;
           }
           lastSeenByTrader.set(trader.address, latest[0]?.signature);
-          continue;
+          return;
         }
 
         const lastSeenSignature = await processTraderSignatures(
@@ -439,23 +659,39 @@ export async function startCopyTradeWorker() {
 
         lastSeenByTrader.set(trader.address, lastSeenSignature);
       } catch (error) {
-        console.error(
-          JSON.stringify({
-            event: "COPY_TRADE_WORKER_ERROR",
-            trader: trader.address,
-            message: error instanceof Error ? error.message : "Unknown worker error"
-          })
-        );
+        const message = error instanceof Error ? error.message : "Unknown worker error";
+        console.error(JSON.stringify({ event: "COPY_TRADE_WORKER_ERROR", trader: trader.address, message }));
+        createBotLog({
+          level: "error",
+          event: "COPY_WORKER_ERROR",
+          message,
+          trader: trader.address,
+          metadata: { trader: trader.address }
+        });
       }
-    }
+    }));
 
     await sleep(pollIntervalMs);
   }
 }
 
 if (require.main === module) {
+  process.on("unhandledRejection", (reason) => {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    console.error(JSON.stringify({ event: "COPY_WORKER_UNHANDLED_REJECTION", message }));
+    createBotLog({ level: "error", event: "COPY_WORKER_FATAL", message });
+    process.exit(1);
+  });
+
   startCopyTradeWorker().catch((error) => {
+    const message = error instanceof Error ? error.message : "Copy-trade worker fatal crash";
     console.error(error);
+    createBotLog({
+      level: "error",
+      event: "COPY_WORKER_FATAL",
+      message,
+      metadata: { stack: error instanceof Error ? error.stack?.slice(0, 1000) : undefined }
+    });
     process.exit(1);
   });
 }

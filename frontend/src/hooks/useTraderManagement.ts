@@ -1,5 +1,5 @@
 import { FormEvent, useCallback, useState } from "react";
-import { addTrackedTrader, deleteTrackedTrader } from "../api/client";
+import { addTrackedTrader, deleteTrackedTrader, patchTrackedTrader } from "../api/client";
 import type { Trader } from "../types";
 
 const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]+$/;
@@ -49,12 +49,25 @@ export function useTraderManagement(traders: Trader[], setTraders: SetTraders) {
     [setTraders]
   );
 
+  const toggleTrader = useCallback(
+    async (address: string, enabled: boolean) => {
+      try {
+        const nextTraders = await patchTrackedTrader(address, { enabled });
+        setTraders(nextTraders);
+      } catch (submitError) {
+        setError(submitError instanceof Error ? submitError.message : "Failed to update trader");
+      }
+    },
+    [setTraders]
+  );
+
   return {
     walletAddress,
     error,
     setWalletAddress,
     setError,
     addTrader,
-    removeTrader
+    removeTrader,
+    toggleTrader
   };
 }

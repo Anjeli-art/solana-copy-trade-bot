@@ -1,5 +1,5 @@
 import type { MouseEvent } from "react";
-import { Activity, BarChart3, Bot, ClipboardList, Radio, Wallet } from "lucide-react";
+import { Activity, BarChart3, Bot, ClipboardList, GitFork, Radio, Wallet } from "lucide-react";
 import type { View } from "../types";
 import { getRouteForView } from "../utils/routes";
 
@@ -12,6 +12,7 @@ const navItems = [
   { view: "dashboard", label: "Dashboard", icon: Activity },
   { view: "positions", label: "Positions", icon: Wallet },
   { view: "traders", label: "Traders", icon: Radio },
+  { view: "mirror", label: "Mirror", icon: GitFork },
   { view: "analytics", label: "Analytics", icon: BarChart3 },
   { view: "logs", label: "Logs", icon: ClipboardList }
 ] satisfies Array<{ view: View; label: string; icon: typeof Activity }>;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { deleteLog, getLogEvents, getLogs } from "../api/client";
+import { deleteAllLogs, deleteLog, deleteLogsByEvent, getLogEvents, getLogs } from "../api/client";
 import type { BotLog } from "../types";
 
 type SetApiError = (message: string) => void;
@@ -31,7 +31,7 @@ export function useLogs(setApiError: SetApiError) {
       try {
         setApiError("");
         setIsLogsRefreshing(true);
-        const nextLogs = await getLogs(200, eventFilter === "all" ? undefined : eventFilter);
+        const nextLogs = await getLogs(1000, eventFilter === "all" ? undefined : eventFilter);
         setLogs(nextLogs);
       } catch (fetchError) {
         setApiError(fetchError instanceof Error ? fetchError.message : "Failed to load logs");
@@ -70,6 +70,25 @@ export function useLogs(setApiError: SetApiError) {
     [setApiError]
   );
 
+  const removeLogsByEvent = useCallback(
+    async (event: string) => {
+      try {
+        setApiError("");
+        if (event === "all") {
+          await deleteAllLogs();
+          setLogs([]);
+        } else {
+          await deleteLogsByEvent(event);
+          setLogs((current) => current.filter((log) => log.event !== event));
+          // Do NOT remove event from logEvents — list stays intact until refresh
+        }
+      } catch (submitError) {
+        setApiError(submitError instanceof Error ? submitError.message : "Failed to delete logs");
+      }
+    },
+    [setApiError]
+  );
+
   const changeLogEventFilter = useCallback((nextEvent: string) => {
     setLogEventFilter(nextEvent);
   }, []);
@@ -81,6 +100,7 @@ export function useLogs(setApiError: SetApiError) {
     isLogsRefreshing,
     refreshLogs,
     removeLog,
+    removeLogsByEvent,
     changeLogEventFilter
   };
 }

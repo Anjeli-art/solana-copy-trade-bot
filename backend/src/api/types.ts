@@ -22,6 +22,7 @@ export type ActivePosition = {
   tokenMint: string;
   tokenImage?: string;
   sourceTrader: string;
+  sourceSignature?: string;
   buyPlatform: PlatformName;
   buyTx?: string;
   entryPriceUsd: number;
@@ -39,7 +40,7 @@ export type ActivePosition = {
   profitTier: "low" | "high";
 };
 
-export type CloseReason = "take-profit" | "manual" | "stop-loss" | "timeout";
+export type CloseReason = "take-profit" | "manual" | "stop-loss" | "timeout" | "deleted";
 
 export type ClosedPosition = Omit<ActivePosition, "status" | "currentPriceUsd"> & {
   exitPriceUsd: number;

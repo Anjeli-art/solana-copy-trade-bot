@@ -5,6 +5,38 @@ export const WSOL_MINT = "So11111111111111111111111111111111111111112";
 
 type TokenBalanceByMint = Map<string, number>;
 
+type ParsedTokenBalance = {
+  owner?: string;
+  mint?: string;
+  uiTokenAmount?: {
+    uiAmount?: number | null;
+    amount?: string;
+    decimals?: number;
+  };
+};
+
+type ParsedAccountKey = {
+  pubkey?: {
+    toBase58?: () => string;
+  };
+};
+
+type ParsedPlatformTransaction = {
+  slot: number;
+  blockTime?: number | null;
+  transaction: {
+    message: {
+      accountKeys?: ParsedAccountKey[];
+    };
+  };
+  meta?: {
+    preBalances?: number[];
+    postBalances?: number[];
+    preTokenBalances?: ParsedTokenBalance[] | null;
+    postTokenBalances?: ParsedTokenBalance[] | null;
+  } | null;
+};
+
 type PlatformProgram = {
   platform: PlatformName;
   programIds: string[];
@@ -75,7 +107,7 @@ const platformPrograms: PlatformProgram[] = [
   }
 ];
 
-function toTokenAmount(balance: any) {
+function toTokenAmount(balance: ParsedTokenBalance) {
   const amount = balance?.uiTokenAmount?.uiAmount;
   if (typeof amount === "number" && Number.isFinite(amount)) {
     return amount;
@@ -86,7 +118,7 @@ function toTokenAmount(balance: any) {
   return rawAmount / 10 ** decimals;
 }
 
-function collectTokenBalancesByMint(balances: any[] | null | undefined, owner: string): TokenBalanceByMint {
+function collectTokenBalancesByMint(balances: ParsedTokenBalance[] | null | undefined, owner: string): TokenBalanceByMint {
   const byMint: TokenBalanceByMint = new Map();
 
   for (const balance of balances || []) {
@@ -100,15 +132,15 @@ function collectTokenBalancesByMint(balances: any[] | null | undefined, owner: s
   return byMint;
 }
 
-function getTokenBalanceByMint(balances: any[] | null | undefined, owner: string, mint: string) {
+function getTokenBalanceByMint(balances: ParsedTokenBalance[] | null | undefined, owner: string, mint: string) {
   return (balances || [])
     .filter((balance) => balance.owner === owner && balance.mint === mint)
     .reduce((sum, balance) => sum + toTokenAmount(balance), 0);
 }
 
-function getSolChangeForTrader(transaction: any, trader: string) {
+function getSolChangeForTrader(transaction: ParsedPlatformTransaction, trader: string) {
   const keys = transaction.transaction.message.accountKeys || [];
-  const accountIndex = keys.findIndex((account: any) => account.pubkey?.toBase58?.() === trader);
+  const accountIndex = keys.findIndex((account) => account.pubkey?.toBase58?.() === trader);
 
   if (accountIndex < 0) {
     return 0;
@@ -119,13 +151,13 @@ function getSolChangeForTrader(transaction: any, trader: string) {
   return (post - pre) / LAMPORTS_PER_SOL;
 }
 
-function getWsolChangeForTrader(transaction: any, trader: string) {
+function getWsolChangeForTrader(transaction: ParsedPlatformTransaction, trader: string) {
   const pre = getTokenBalanceByMint(transaction.meta?.preTokenBalances, trader, WSOL_MINT);
   const post = getTokenBalanceByMint(transaction.meta?.postTokenBalances, trader, WSOL_MINT);
   return post - pre;
 }
 
-function getMentionedPrograms(transaction: any) {
+function getMentionedPrograms(transaction: ParsedPlatformTransaction) {
   const keys = transaction.transaction.message.accountKeys || [];
   const mentioned = new Set<string>();
 
@@ -143,7 +175,7 @@ function getKnownPlatformProgramIds() {
   return new Set(platformPrograms.flatMap((platform) => platform.programIds));
 }
 
-function detectPlatform(transaction: any) {
+function detectPlatform(transaction: ParsedPlatformTransaction) {
   const mentioned = getMentionedPrograms(transaction);
 
   for (const platform of platformPrograms) {
@@ -159,7 +191,11 @@ function detectPlatform(transaction: any) {
   return undefined;
 }
 
-function getTraderBuyDeltas(transaction: any, trader: string) {
+function getTraderBuyDeltas(transaction: ParsedPlatformTransaction, trader: string) {
+  if (!transaction.meta) {
+    return [];
+  }
+
   const preBalances = collectTokenBalancesByMint(transaction.meta.preTokenBalances, trader);
   const postBalances = collectTokenBalancesByMint(transaction.meta.postTokenBalances, trader);
   const deltas: Array<{ mint: string; delta: number }> = [];
@@ -177,7 +213,7 @@ function getTraderBuyDeltas(transaction: any, trader: string) {
 }
 
 export function detectTraderPlatformBuys(
-  transaction: any,
+  transaction: ParsedPlatformTransaction,
   trader: string,
   signature: string,
   solPriceUsd: number
@@ -221,8 +257,85 @@ export function detectTraderPlatformBuys(
   return buys;
 }
 
+export type DetectedTraderSell = {
+  trader: string;
+  signature: string;
+  slot: number;
+  blockTime: number | null | undefined;
+  tokenMint: string;
+  tokenAmountSold: number;
+  sellPct: number;
+  solReceived: number;
+  platform: PlatformName;
+  matchedPrograms: string[];
+};
+
+function getTraderSellDeltas(transaction: ParsedPlatformTransaction, trader: string) {
+  if (!transaction.meta) {
+    return [];
+  }
+
+  const preBalances = collectTokenBalancesByMint(transaction.meta.preTokenBalances, trader);
+  const postBalances = collectTokenBalancesByMint(transaction.meta.postTokenBalances, trader);
+  const deltas: Array<{ mint: string; amountSold: number; preBalance: number }> = [];
+
+  for (const [mint, preAmount] of preBalances) {
+    const postAmount = postBalances.get(mint) || 0;
+    const sold = preAmount - postAmount;
+    if (sold > 0) {
+      deltas.push({ mint, amountSold: sold, preBalance: preAmount });
+    }
+  }
+
+  return deltas;
+}
+
+export function detectTraderPlatformSells(
+  transaction: ParsedPlatformTransaction,
+  trader: string,
+  signature: string
+): DetectedTraderSell[] {
+  if (!transaction.meta) {
+    return [];
+  }
+
+  const platformMatch = detectPlatform(transaction);
+  if (!platformMatch) {
+    return [];
+  }
+
+  const solChange = getSolChangeForTrader(transaction, trader);
+  const wsolChange = getWsolChangeForTrader(transaction, trader);
+  // Positive = received SOL (sell direction)
+  const solReceived = Math.max(0, solChange, wsolChange);
+
+  if (solReceived <= 0.0001) {
+    return [];
+  }
+
+  const sells: DetectedTraderSell[] = [];
+
+  for (const { mint, amountSold, preBalance } of getTraderSellDeltas(transaction, trader)) {
+    const sellPct = preBalance > 0 ? Math.min(1, amountSold / preBalance) : 1;
+    sells.push({
+      trader,
+      signature,
+      slot: transaction.slot,
+      blockTime: transaction.blockTime,
+      tokenMint: mint,
+      tokenAmountSold: amountSold,
+      sellPct,
+      solReceived,
+      platform: platformMatch.platform,
+      matchedPrograms: platformMatch.matchedPrograms
+    });
+  }
+
+  return sells;
+}
+
 export function detectUnmatchedTraderBuyLikes(
-  transaction: any,
+  transaction: ParsedPlatformTransaction,
   trader: string,
   signature: string
 ): UnmatchedTraderBuyLike[] {
