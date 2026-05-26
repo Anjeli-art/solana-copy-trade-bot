@@ -2682,27 +2682,53 @@ button:focus-visible {
 }
 
 .mirror-trader-row {
-  grid-template-columns: 40px minmax(0, 1fr) 86px 36px 36px;
+  grid-template-columns: 40px minmax(0, 1fr) 118px 36px 36px;
 }
 
 .mirror-buy-badge {
-  display: grid;
-  gap: 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 1px;
   justify-items: end;
   min-width: 0;
+  text-align: right;
 }
 
-.mirror-buy-badge strong {
+.mirror-buy-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.mirror-buy-main strong {
   color: #17201b;
   font-size: 12px;
   font-weight: 800;
-  line-height: 1.2;
+  line-height: 1.05;
 }
 
-.mirror-buy-badge span {
+.mirror-buy-label {
   color: #66746c;
   font-size: 10px;
+  font-weight: 800;
+  line-height: 1.05;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.mirror-buy-usd {
+  color: #8a9892;
+  font-size: 11px;
   font-weight: 600;
+  font-style: italic;
+  line-height: 1.05;
+  white-space: nowrap;
 }
 
 .mirror-ext-link {
@@ -2735,28 +2761,50 @@ button:focus-visible {
   color: #17201b;
 }
 
+/* Active and closed mirror rows share the first 5 column widths (icon + token +
+   entry + current/exit + %). After that they diverge: active has amount + platform
+   + Sell, closed has Net-SOL + combined close-meta (platform stack & Tx link & age). */
 .mirror-position-row.position-row.active {
   grid-template-columns:
     40px
-    minmax(124px, 1.22fr)
-    minmax(72px, 0.55fr)
-    minmax(78px, 0.62fr)
-    minmax(76px, 0.6fr)
-    minmax(90px, 0.72fr)
-    74px
+    minmax(150px, 1.35fr)
+    minmax(86px, 0.62fr)
+    minmax(86px, 0.62fr)
+    minmax(86px, 0.6fr)
+    minmax(112px, 0.68fr)
+    104px
     74px;
 }
 
 .mirror-position-row.position-row.closed {
   grid-template-columns:
     40px
-    minmax(124px, 1.22fr)
-    minmax(66px, 0.52fr)
-    minmax(66px, 0.52fr)
-    minmax(72px, 0.56fr)
-    minmax(72px, 0.52fr)
-    minmax(116px, 0.82fr)
-    166px;
+    minmax(150px, 1.35fr)
+    minmax(86px, 0.62fr)
+    minmax(86px, 0.62fr)
+    minmax(86px, 0.6fr)
+    minmax(112px, 0.68fr)
+    104px
+    74px;
+}
+
+.mirror-tx-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 74px;
+  min-width: 0;
+}
+
+.mirror-closed-at {
+  color: #8a9892;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1.05;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .mirror-position-trader {
@@ -2764,16 +2812,21 @@ button:focus-visible {
 }
 
 .mirror-close-meta {
-  grid-template-columns: 92px 58px;
+  display: contents;
 }
 
 .mirror-close-meta .platform-stack {
-  width: 92px;
+  grid-column: 7;
+  width: 104px;
+  min-width: 0;
+}
+
+.mirror-close-meta .mirror-tx-stack {
+  grid-column: 8;
 }
 
 .mirror-close-meta .reason-pill {
-  width: 58px;
-  min-width: 58px;
+  min-width: 0;
 }
 
 .mirror-tx-pill {
@@ -2782,6 +2835,9 @@ button:focus-visible {
   justify-content: center;
   gap: 4px;
   color: #44515c;
+  font-size: 10px;
+  min-height: 20px;
+  padding-inline: 4px;
   text-decoration: none;
 }
 
@@ -2831,10 +2887,10 @@ button:focus-visible {
   align-items: center;
   justify-content: center;
   min-width: 54px;
-  min-height: 24px;
-  padding: 0 8px;
+  min-height: 22px;
+  padding: 0 9px;
   border-radius: 8px;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.03em;

@@ -90,6 +90,7 @@ type DbClosedPosition = {
   sell_priority_fee_sol: number | null;
   sell_quoted_out_sol: number | null;
   sell_actual_sol_change: number | null;
+  ata_rent_recovered: number | null;
 };
 
 type DbSettings = {
@@ -220,7 +221,9 @@ function toActivePosition(row: DbActivePosition): ActivePosition {
               ? "raydium_cpmm"
               : row.monitor_type === "raydium_clmm"
                 ? "raydium_clmm"
-                : null
+                : row.monitor_type === "orca_whirlpool"
+                  ? "orca_whirlpool"
+                  : null
   };
 }
 
@@ -257,7 +260,8 @@ function toClosedPosition(row: DbClosedPosition): ClosedPosition {
     sellNetworkFeeSol: row.sell_network_fee_sol ?? undefined,
     sellPriorityFeeSol: row.sell_priority_fee_sol ?? undefined,
     sellQuotedOutSol: row.sell_quoted_out_sol ?? undefined,
-    sellActualSolChange: row.sell_actual_sol_change ?? undefined
+    sellActualSolChange: row.sell_actual_sol_change ?? undefined,
+    ataRentRecovered: row.ata_rent_recovered ?? 0
   };
 }
 

@@ -7,6 +7,7 @@ import { executePumpSwapSell } from "../services/pumpswapSwap";
 import { executePumpFunSell } from "../services/pumpfunSwap";
 import { executeRaydiumAmmV4Sell } from "../services/raydiumAmmV4Swap";
 import { executeRaydiumCpmmSell, executeRaydiumClmmSell } from "../services/raydiumCpmmClmmSwap";
+import { executeOrcaWhirlpoolSell } from "../services/orcaWhirlpoolSwap";
 import { createBotLog } from "../services/logs";
 import { getTokenMetadata } from "../services/tokenMetadata";
 import { refreshWalletBalance } from "../services/walletBalance";
@@ -83,6 +84,7 @@ function getMirrorClosedPositions() {
       close_reason: string;
       buy_platform: string | null;
       exit_platform: string | null;
+      ata_rent_recovered: number | null;
       opened_at: string;
       closed_at: string;
       created_at: string;
@@ -303,6 +305,7 @@ export async function handleMirror(
           tokenAmount: pos.token_amount,
           solSpent: pos.sol_spent,
           solReceived: pos.sol_received,
+          ataRentRecovered: pos.ata_rent_recovered ?? 0,
           closeReason: pos.close_reason,
           openedAt: pos.opened_at,
           closedAt: pos.closed_at
@@ -343,6 +346,8 @@ export async function handleMirror(
         pos.monitor_type === "raydium_cpmm" && Boolean(pos.pool_address);
       const useNativeRaydiumClmm =
         pos.monitor_type === "raydium_clmm" && Boolean(pos.pool_address);
+      const useNativeOrca =
+        pos.monitor_type === "orca_whirlpool" && Boolean(pos.pool_address);
       const result = useNativePumpSwap
         ? await executePumpSwapSell(pos.token_mint, pos.token_amount, pos.pool_address as string)
         : useNativePumpFun
@@ -363,7 +368,14 @@ export async function handleMirror(
                     tokenDecimals,
                     pos.pool_address as string
                   )
-                : await executeJupiterSell(pos.token_mint, pos.token_amount);
+                : useNativeOrca
+                  ? await executeOrcaWhirlpoolSell(
+                      pos.token_mint,
+                      pos.token_amount,
+                      tokenDecimals,
+                      pos.pool_address as string
+                    )
+                  : await executeJupiterSell(pos.token_mint, pos.token_amount);
       const executionRoute = useNativePumpSwap
         ? "PumpSwap"
         : useNativePumpFun
@@ -374,7 +386,9 @@ export async function handleMirror(
               ? "Raydium-CPMM"
               : useNativeRaydiumClmm
                 ? "Raydium-CLMM"
-                : "Jupiter";
+                : useNativeOrca
+                  ? "Orca"
+                  : "Jupiter";
       const state = await readState();
       const wallet = await refreshWalletBalance(state.wallet);
       const solReceived = result.actualSolChange !== undefined

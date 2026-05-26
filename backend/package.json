@@ -15,6 +15,7 @@
     "test": "node --test -r ts-node/register \"src/api/**/*.test.ts\""
   },
   "dependencies": {
+    "@orca-so/whirlpools-sdk": "^0.20.0",
     "@project-serum/anchor": "^0.26.0",
     "@pump-fun/pump-sdk": "^1.36.0",
     "@pump-fun/pump-swap-sdk": "^1.16.0",

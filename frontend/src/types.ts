@@ -52,6 +52,9 @@ export type ClosedPosition = Position & {
   sellPriorityFeeSol?: number;
   sellQuotedOutSol?: number;
   sellActualSolChange?: number;
+  // SOL returned when the empty token ATA was closed after this sell.
+  // Treated as a credit when computing user-visible PnL (rent is a deposit, not a cost).
+  ataRentRecovered?: number;
 };
 
 export type ManualRepeatToken = {
@@ -215,6 +218,9 @@ export type MirrorClosedPosition = {
   tokenAmount: number;
   solSpent: number;
   solReceived?: number;
+  // SOL returned when we closed the empty token ATA after the sell.
+  // Treated as a credit when computing the user-visible PnL — rent is a deposit, not a cost.
+  ataRentRecovered?: number;
   closeReason: string;
   openedAt: string;
   closedAt: string;

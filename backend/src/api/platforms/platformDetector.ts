@@ -70,6 +70,7 @@ export type DetectedTraderBuy = {
     | "raydium_amm_v4"
     | "raydium_cpmm"
     | "raydium_clmm"
+    | "orca_whirlpool"
     | null;
 };
 
@@ -77,6 +78,7 @@ export const PUMP_SWAP_PROGRAM_ID = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA
 export const RAYDIUM_AMM_V4_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
 export const RAYDIUM_CPMM_PROGRAM_ID = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C";
 export const RAYDIUM_CLMM_PROGRAM_ID = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK";
+export const ORCA_WHIRLPOOL_PROGRAM_ID = "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc";
 
 type ParsedInstruction = {
   programId?: { toBase58?: () => string };
@@ -251,6 +253,49 @@ export function extractRaydiumCpmmPoolInfo(
       continue;
     }
     return { poolAddress, poolBaseVault: baseVault, poolQuoteVault: quoteVault };
+  }
+
+  return null;
+}
+
+/**
+ * Find an Orca Whirlpool swap instruction and pull pool state address.
+ * Whirlpool's `swap` instruction layout (from anchor IDL):
+ *   accounts[0] = token program
+ *   accounts[1] = token authority (user)
+ *   accounts[2] = pool (whirlpool state)
+ *   accounts[3] = user token A account
+ *   accounts[4] = pool token vault A
+ *   accounts[5] = user token B account
+ *   accounts[6] = pool token vault B
+ *   accounts[7-9] = tick arrays
+ *   accounts[10] = oracle
+ *
+ * Pricing comes from sqrtPrice in the pool account itself, same as Raydium CLMM —
+ * no vault subscription needed.
+ */
+export function extractOrcaWhirlpoolPoolInfo(transaction: ParsedPlatformTransaction): {
+  poolAddress: string;
+} | null {
+  const tx = transaction as ParsedTransactionWithInner;
+  const allInstructions: ParsedInstruction[] = [];
+  if (tx.transaction.message.instructions) {
+    allInstructions.push(...tx.transaction.message.instructions);
+  }
+  for (const inner of tx.meta?.innerInstructions || []) {
+    if (inner.instructions) {
+      allInstructions.push(...inner.instructions);
+    }
+  }
+
+  for (const ix of allInstructions) {
+    const programId = ix.programId?.toBase58?.();
+    if (programId !== ORCA_WHIRLPOOL_PROGRAM_ID) continue;
+    const accounts = ix.accounts || [];
+    // Whirlpool swap requires at least 11 accounts (pool through oracle).
+    if (accounts.length < 11) continue;
+    const poolAddress = accounts[2]?.toBase58?.();
+    if (poolAddress) return { poolAddress };
   }
 
   return null;
@@ -490,6 +535,8 @@ export function detectTraderPlatformBuys(
     platformMatch.platform === "Raydium" ? extractRaydiumAmmV4PoolInfo(transaction) : null;
   const raydiumClmmPool =
     platformMatch.platform === "Raydium" ? extractRaydiumClmmPoolInfo(transaction) : null;
+  const orcaWhirlpool =
+    platformMatch.platform === "Orca" ? extractOrcaWhirlpoolPoolInfo(transaction) : null;
 
   for (const { mint, delta } of getTraderBuyDeltas(transaction, trader)) {
     // For Pump.fun bonding curve, derive the curve PDA per-token (deterministic from mint).
@@ -507,6 +554,7 @@ export function detectTraderPlatformBuys(
     else if (raydiumAmmPool) monitorType = "raydium_amm_v4";
     else if (raydiumCpmmPool) monitorType = "raydium_cpmm";
     else if (raydiumClmmPool) monitorType = "raydium_clmm";
+    else if (orcaWhirlpool) monitorType = "orca_whirlpool";
     else if (pumpFunBondingCurve) monitorType = "pumpfun";
     buys.push({
       trader,
@@ -526,6 +574,7 @@ export function detectTraderPlatformBuys(
         raydiumAmmPool?.poolAddress ||
         raydiumCpmmPool?.poolAddress ||
         raydiumClmmPool?.poolAddress ||
+        orcaWhirlpool?.poolAddress ||
         pumpFunBondingCurve ||
         undefined,
       poolBaseVault:

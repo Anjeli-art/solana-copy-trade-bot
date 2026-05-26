@@ -7,6 +7,7 @@ import { executePumpSwapSell } from "../services/pumpswapSwap";
 import { executePumpFunSell } from "../services/pumpfunSwap";
 import { executeRaydiumAmmV4Sell } from "../services/raydiumAmmV4Swap";
 import { executeRaydiumCpmmSell, executeRaydiumClmmSell } from "../services/raydiumCpmmClmmSwap";
+import { executeOrcaWhirlpoolSell } from "../services/orcaWhirlpoolSwap";
 import { createBotLog } from "../services/logs";
 import { getPositionCloseSignal } from "../services/positionRules";
 import { refreshWalletBalance } from "../services/walletBalance";
@@ -33,6 +34,11 @@ import {
   clmmSellQuoteSol,
   type ClmmPoolDecoded
 } from "../services/raydiumClmmPool";
+import {
+  decodeWhirlpoolFromBase64,
+  whirlpoolSellQuoteSol,
+  type WhirlpoolDecoded
+} from "../services/orcaWhirlpoolPool";
 import type { BondingCurve } from "@pump-fun/pump-sdk";
 
 dotenv.config({
@@ -284,6 +290,8 @@ async function inspectPosition(
     position.monitorType === "raydium_cpmm" && Boolean(position.poolAddress);
   const useNativeRaydiumClmm =
     position.monitorType === "raydium_clmm" && Boolean(position.poolAddress);
+  const useNativeOrca =
+    position.monitorType === "orca_whirlpool" && Boolean(position.poolAddress);
   const executionRoute = useNativePumpSwap
     ? "PumpSwap"
     : useNativePumpFun
@@ -294,7 +302,9 @@ async function inspectPosition(
           ? "Raydium-CPMM"
           : useNativeRaydiumClmm
             ? "Raydium-CLMM"
-            : "Jupiter";
+            : useNativeOrca
+              ? "Orca"
+              : "Jupiter";
   const positionDecimals = position.poolBaseDecimals ?? 0;
 
   let result: Awaited<ReturnType<typeof executeJupiterSell>>;
@@ -330,7 +340,14 @@ async function inspectPosition(
                   positionDecimals,
                   position.poolAddress as string
                 )) as unknown as Awaited<ReturnType<typeof executeJupiterSell>>
-              : await executeJupiterSell(position.tokenMint, position.tokenAmount, priceQuoteResponse);
+              : useNativeOrca
+                ? (await executeOrcaWhirlpoolSell(
+                    position.tokenMint,
+                    position.tokenAmount,
+                    positionDecimals,
+                    position.poolAddress as string
+                  )) as unknown as Awaited<ReturnType<typeof executeJupiterSell>>
+                : await executeJupiterSell(position.tokenMint, position.tokenAmount, priceQuoteResponse);
   } catch (error) {
     sellInProgress.delete(position.id);
     await patchActivePosition(position.id, { status: "open", currentPriceUsd });
@@ -424,13 +441,31 @@ function quoteFromVaultCache(
   position: ActivePosition,
   vaultAmounts: Map<string, bigint>,
   bondingCurveCache: Map<string, BondingCurve>,
-  clmmPoolCache: Map<string, ClmmPoolDecoded>
+  clmmPoolCache: Map<string, ClmmPoolDecoded>,
+  whirlpoolCache: Map<string, WhirlpoolDecoded>
 ): number {
   if (position.monitorType === "raydium_clmm") {
     if (!position.poolAddress) return 0;
     const pool = clmmPoolCache.get(position.poolAddress);
     if (!pool) return 0;
     return clmmSellQuoteSol(pool, position.tokenMint, position.tokenAmount, 25);
+  }
+  if (position.monitorType === "orca_whirlpool") {
+    if (!position.poolAddress) return 0;
+    if (position.poolBaseDecimals == null) return 0;
+    const pool = whirlpoolCache.get(position.poolAddress);
+    if (!pool) return 0;
+    // SOL/WSOL is 9 decimals. Pass the meme decimals on whichever side it lives.
+    const memeIsA = pool.mintA === position.tokenMint;
+    const decimalsA = memeIsA ? position.poolBaseDecimals : 9;
+    const decimalsB = memeIsA ? 9 : position.poolBaseDecimals;
+    return whirlpoolSellQuoteSol(
+      pool,
+      position.tokenMint,
+      position.tokenAmount,
+      decimalsA,
+      decimalsB
+    );
   }
   if (position.monitorType === "pumpfun") {
     if (!position.poolAddress) return 0;
@@ -486,14 +521,16 @@ export async function startProfitWatcherWorker() {
   const vaultAmounts = new Map<string, bigint>();
   const bondingCurveCache = new Map<string, BondingCurve>();
   const clmmPoolCache = new Map<string, ClmmPoolDecoded>();
+  const whirlpoolCache = new Map<string, WhirlpoolDecoded>();
   const subscribedAccounts = new Set<string>();
   // account → positions that depend on it
   const positionsByAccount = new Map<string, Set<string>>();
   // account → which decoder to use
   //   "spltoken"  for PumpSwap / AMM v4 / CPMM vaults
   //   "bonding"   for Pump.fun bonding curve
-  //   "clmm_pool" for CLMM pool state (sqrt_price)
-  const accountKind = new Map<string, "spltoken" | "bonding" | "clmm_pool">();
+  //   "clmm_pool" for Raydium CLMM pool state (sqrt_price)
+  //   "whirlpool" for Orca Whirlpool pool state (sqrt_price)
+  const accountKind = new Map<string, "spltoken" | "bonding" | "clmm_pool" | "whirlpool">();
   const wsManager: HeliusWebSocketManager | null = createHeliusWebSocketManager();
 
   const triggerInspectByPositionId = async (positionId: string) => {
@@ -502,7 +539,7 @@ export async function startProfitWatcherWorker() {
       const position = state.activePositions.find((p) => p.id === positionId);
       if (!position || position.status !== "open") return;
       if (position.profitTier !== workerTier) return;
-      const quotedOutSol = quoteFromVaultCache(position, vaultAmounts, bondingCurveCache, clmmPoolCache);
+      const quotedOutSol = quoteFromVaultCache(position, vaultAmounts, bondingCurveCache, clmmPoolCache, whirlpoolCache);
       if (quotedOutSol <= 0) return;
       const wallet = await refreshWalletBalance(state.wallet);
       const targetMultiplier =
@@ -546,6 +583,8 @@ export async function startProfitWatcherWorker() {
           bondingCurveCache.set(account, decodeBondingCurveFromBase64(dataBase64));
         } else if (kind === "clmm_pool") {
           clmmPoolCache.set(account, decodeClmmPoolFromBase64(dataBase64));
+        } else if (kind === "whirlpool") {
+          whirlpoolCache.set(account, decodeWhirlpoolFromBase64(dataBase64, account));
         } else {
           // Default to SPL Token decoder (PumpSwap / AMM v4 / CPMM vault).
           vaultAmounts.set(account, decodeTokenAccountAmount(dataBase64));
@@ -590,9 +629,10 @@ export async function startProfitWatcherWorker() {
       // Two-vault venues (PumpSwap / AMM v4 / CPMM) subscribe to base+quote token vaults.
       // Pump.fun subscribes to the bonding curve account itself.
       // CLMM subscribes to the pool state account itself (sqrt_price lives there).
+      // Orca Whirlpool: same — pool state has sqrt_price.
       if (wsManager) {
         const requiredAccounts = new Map<string, Set<string>>();
-        const requiredKind = new Map<string, "spltoken" | "bonding" | "clmm_pool">();
+        const requiredKind = new Map<string, "spltoken" | "bonding" | "clmm_pool" | "whirlpool">();
 
         for (const position of positionsForTier) {
           if (
@@ -620,6 +660,12 @@ export async function startProfitWatcherWorker() {
             set.add(position.id);
             requiredAccounts.set(position.poolAddress, set);
             requiredKind.set(position.poolAddress, "clmm_pool");
+          } else if (position.monitorType === "orca_whirlpool") {
+            if (!position.poolAddress) continue;
+            const set = requiredAccounts.get(position.poolAddress) || new Set<string>();
+            set.add(position.id);
+            requiredAccounts.set(position.poolAddress, set);
+            requiredKind.set(position.poolAddress, "whirlpool");
           }
         }
 
@@ -651,6 +697,7 @@ export async function startProfitWatcherWorker() {
             vaultAmounts.delete(account);
             bondingCurveCache.delete(account);
             clmmPoolCache.delete(account);
+            whirlpoolCache.delete(account);
             accountKind.delete(account);
             wsManager.unsubscribeAccount(account).catch(() => undefined);
           }
@@ -666,9 +713,10 @@ export async function startProfitWatcherWorker() {
             position.monitorType === "pumpfun" ||
             position.monitorType === "raydium_amm_v4" ||
             position.monitorType === "raydium_cpmm" ||
-            position.monitorType === "raydium_clmm"
+            position.monitorType === "raydium_clmm" ||
+            position.monitorType === "orca_whirlpool"
           ) {
-            const cached = quoteFromVaultCache(position, vaultAmounts, bondingCurveCache, clmmPoolCache);
+            const cached = quoteFromVaultCache(position, vaultAmounts, bondingCurveCache, clmmPoolCache, whirlpoolCache);
             if (cached > 0) {
               preCalculatedQuotedOutSol = cached;
             }

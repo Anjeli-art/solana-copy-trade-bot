@@ -16,6 +16,8 @@ import dotenv from "dotenv";
 import { getRaydiumConnection, getTradingWallet, formatAmmKeysById } from "./raydiumSwap";
 import { getJupiterSwapExecutionDetails } from "./jupiterSwap";
 import { createBotLog } from "./logs";
+import { closeTokenAccountIfEmpty } from "./ataRentRecovery";
+import { getActualTokenBalance } from "./tokenBalance";
 
 // Re-export the underlying builder so we can drive it manually with shouldSend / onSignature.
 // The original executeRaydiumBuy/Sell do send+confirm internally without those hooks.
@@ -86,7 +88,13 @@ async function getTokenDecimals(mint: PublicKey): Promise<number> {
 async function buildSwap(params: {
   side: "buy" | "sell";
   tokenMint: string;
+  /** For buy: SOL amount (UI). For sell: ignored if `rawAmount` is provided. */
   amount: number;
+  /**
+   * Sell path uses this — the exact raw on-chain ATA balance read at the call site.
+   * Skips the ui→raw conversion (which can round-off by 1 unit and leave dust).
+   */
+  rawAmount?: BN;
   poolId: string;
 }): Promise<{ transaction: VersionedTransaction; blockhash: string; lastValidBlockHeight: number }> {
   const connection = getRaydiumConnection();
@@ -104,10 +112,9 @@ async function buildSwap(params: {
   const wsol = Token.WSOL;
   const inputToken = params.side === "buy" ? wsol : token;
   const outputToken = params.side === "buy" ? token : wsol;
-  const amountIn = new TokenAmount(
-    inputToken,
-    new BN(new Decimal(params.amount).mul(10 ** inputToken.decimals).toFixed(0))
-  );
+  const rawIn = params.rawAmount
+    ?? new BN(new Decimal(params.amount).mul(10 ** inputToken.decimals).toFixed(0));
+  const amountIn = new TokenAmount(inputToken, rawIn);
 
   const poolInfo = await Liquidity.fetchInfo({ connection, poolKeys });
   const { minAmountOut } = Liquidity.computeAmountOut({
@@ -237,7 +244,17 @@ export async function executeRaydiumAmmV4Sell(
 ): Promise<RaydiumAmmV4SwapResult> {
   try {
     const connection = getRaydiumConnection();
-    const built = await buildSwap({ side: "sell", tokenMint, amount: tokenAmount, poolId });
+    const wallet = getTradingWallet();
+    // CRITICAL: sell live on-chain balance (raw BN), not position.tokenAmount.
+    // Prevents dust → ATA stays open → rent leak.
+    const actual = await getActualTokenBalance(connection, wallet.publicKey, new PublicKey(tokenMint));
+    const built = await buildSwap({
+      side: "sell",
+      tokenMint,
+      amount: tokenAmount, // unused when rawAmount is set, kept for log clarity
+      rawAmount: actual.balanceRaw,
+      poolId
+    });
     const signature = await connection.sendRawTransaction(built.transaction.serialize(), {
       skipPreflight: false,
       maxRetries: 3
@@ -252,6 +269,10 @@ export async function executeRaydiumAmmV4Sell(
       tokenMint,
       signatureCount: built.transaction.signatures.length || 1
     });
+
+    closeTokenAccountIfEmpty(connection, wallet, new PublicKey(tokenMint)).catch(
+      () => undefined
+    );
 
     const outputSol = execDetails.actualSolChange !== undefined ? Math.abs(execDetails.actualSolChange) : 0;
     return {

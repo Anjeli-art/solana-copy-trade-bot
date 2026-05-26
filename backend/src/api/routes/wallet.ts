@@ -3,6 +3,8 @@ import { readJsonBody } from "../http/request";
 import { sendError, sendJson } from "../http/response";
 import { readState, saveWallet } from "../state/store";
 import { refreshWalletBalance } from "../services/walletBalance";
+import { sweepAllEmptyTokenAccounts } from "../services/ataRentRecovery";
+import { getRaydiumConnection, getTradingWallet } from "../services/raydiumSwap";
 import type { BotWalletSnapshot } from "../types";
 import { isPositiveNumber, isSolanaAddress } from "../validation";
 
@@ -41,4 +43,24 @@ export async function handleWallet(request: IncomingMessage, response: ServerRes
   }
 
   sendError(response, 405, "METHOD_NOT_ALLOWED", "Method not allowed");
+}
+
+/**
+ * POST /api/wallet/sweep-rent — one-shot recovery of locked rent from empty token
+ * accounts left over from past sells. Returns lamports recovered.
+ */
+export async function handleWalletSweepRent(_request: IncomingMessage, response: ServerResponse) {
+  try {
+    const result = await sweepAllEmptyTokenAccounts(getRaydiumConnection(), getTradingWallet());
+    sendJson(response, 200, {
+      data: {
+        closed: result.closed,
+        recoveredLamports: result.recoveredLamports,
+        recoveredSol: result.recoveredLamports / 1e9
+      }
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Sweep failed";
+    sendError(response, 500, "SWEEP_FAILED", message);
+  }
 }

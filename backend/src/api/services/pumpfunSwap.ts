@@ -19,7 +19,7 @@ import {
   Transaction,
   TransactionInstruction
 } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
 import {
   OnlinePumpSdk,
   PumpSdk,
@@ -27,8 +27,10 @@ import {
   getSellSolAmountFromTokenAmount
 } from "@pump-fun/pump-sdk";
 import { getRaydiumConnection, getTradingWallet } from "./raydiumSwap";
-import { getJupiterSwapExecutionDetails, getJupiterTokenDecimals } from "./jupiterSwap";
+import { getJupiterSwapExecutionDetails } from "./jupiterSwap";
 import { createBotLog } from "./logs";
+import { getActualTokenBalance } from "./tokenBalance";
+import { closeTokenAccountIfEmpty } from "./ataRentRecovery";
 
 dotenv.config({
   path: path.resolve(__dirname, "../../helpers/.env")
@@ -88,6 +90,29 @@ function buildComputeBudgetInstructions(): TransactionInstruction[] {
   ];
 }
 
+/**
+ * Pump.fun started minting Token-2022 mints (e.g. *pump suffix tokens that route via
+ * TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb instead of legacy SPL Token).
+ * The bonding curve SDK requires the *correct* token program — passing the legacy
+ * program for a 2022 mint blows up with custom error 0x1788 (incorrect program id)
+ * because the ATA derivation and the curve's vault PDAs disagree.
+ *
+ * Read the mint account owner once per call (cheap, <50ms) and route accordingly.
+ */
+async function detectTokenProgram(mint: PublicKey): Promise<PublicKey> {
+  const connection = getRaydiumConnection();
+  const mintInfo = await connection.getAccountInfo(mint, "confirmed");
+  if (!mintInfo) {
+    // Mint should always exist; if it doesn't, the buy/sell will fail anyway.
+    // Default to legacy SPL to preserve old behavior.
+    return TOKEN_PROGRAM_ID;
+  }
+  if (mintInfo.owner.equals(TOKEN_2022_PROGRAM_ID)) {
+    return TOKEN_2022_PROGRAM_ID;
+  }
+  return TOKEN_PROGRAM_ID;
+}
+
 async function sendAndConfirm(
   instructions: TransactionInstruction[],
   options: {
@@ -136,7 +161,7 @@ export async function executePumpFunBuy(
     const offlineSdk = new PumpSdk();
 
     const mint = new PublicKey(tokenMint);
-    const tokenProgram = TOKEN_PROGRAM_ID;
+    const tokenProgram = await detectTokenProgram(mint);
 
     const [global, feeConfig, buyState] = await Promise.all([
       onlineSdk.fetchGlobal(),
@@ -215,12 +240,14 @@ export async function executePumpFunSell(
     const offlineSdk = new PumpSdk();
 
     const mint = new PublicKey(tokenMint);
-    const tokenProgram = TOKEN_PROGRAM_ID;
 
-    const tokenDecimals = await getJupiterTokenDecimals(tokenMint);
-    const rawTokenAmount = new BN(
-      Math.max(1, Math.floor(tokenAmount * 10 ** tokenDecimals)).toString()
-    );
+    // CRITICAL: sell the real on-chain balance, not position.tokenAmount.
+    // If DB drifted (transfer fee, partial fill, airdrop) we either oversell
+    // (insufficient funds → tx fails) or undersell (dust left → ATA can't close
+    // → 0.002 SOL rent stuck). Reading the live balance kills both failure modes.
+    const actual = await getActualTokenBalance(connection, wallet.publicKey, mint);
+    const tokenProgram = actual.tokenProgram;
+    const rawTokenAmount = actual.balanceRaw;
 
     const [global, feeConfig, sellState] = await Promise.all([
       onlineSdk.fetchGlobal(),
@@ -264,6 +291,11 @@ export async function executePumpFunSell(
       tokenMint,
       signatureCount
     });
+
+    // Reclaim ~0.00204 SOL rent now that the ATA should be empty. Fire-and-forget —
+    // failure here must not abort the sell flow. Pumpfun previously skipped this;
+    // that's exactly why BgYHsi/69KWVW/BZDqzq leaked rent.
+    closeTokenAccountIfEmpty(connection, wallet, mint).catch(() => undefined);
 
     const outputSol = execDetails.actualSolChange !== undefined ? Math.abs(execDetails.actualSolChange) : 0;
     return {

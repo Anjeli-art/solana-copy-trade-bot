@@ -13,6 +13,7 @@ import { executePumpSwapBuy } from "../services/pumpswapSwap";
 import { executePumpFunBuy } from "../services/pumpfunSwap";
 import { executeRaydiumAmmV4Buy } from "../services/raydiumAmmV4Swap";
 import { executeRaydiumCpmmBuy, executeRaydiumClmmBuy } from "../services/raydiumCpmmClmmSwap";
+import { executeOrcaWhirlpoolBuy } from "../services/orcaWhirlpoolSwap";
 import { createBotLog } from "../services/logs";
 import { logTokenSafetyBeforeBuy } from "../services/tokenSafety";
 import { isTokenBlacklisted } from "../services/tokenBlacklist";
@@ -368,6 +369,8 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
       buy.monitorType === "raydium_cpmm" && Boolean(buy.poolAddress);
     const useNativeRaydiumClmm =
       buy.monitorType === "raydium_clmm" && Boolean(buy.poolAddress);
+    const useNativeOrca =
+      buy.monitorType === "orca_whirlpool" && Boolean(buy.poolAddress);
     const onSignature = (signature: string) => {
       markProcessed({
         signature: buy.signature,
@@ -407,10 +410,15 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
                   shouldSend: isCopyTradingEnabled,
                   onSignature
                 })
-              : await executeJupiterBuy(buy.tokenMint, amountSol, {
-                  shouldSend: isCopyTradingEnabled,
-                  onSignature
-                });
+              : useNativeOrca
+                ? await executeOrcaWhirlpoolBuy(buy.tokenMint, amountSol, buy.poolAddress as string, {
+                    shouldSend: isCopyTradingEnabled,
+                    onSignature
+                  })
+                : await executeJupiterBuy(buy.tokenMint, amountSol, {
+                    shouldSend: isCopyTradingEnabled,
+                    onSignature
+                  });
     const executionRoute = useNativePumpSwap
       ? "PumpSwap"
       : useNativePumpFun
@@ -421,7 +429,9 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
             ? "Raydium-CPMM"
             : useNativeRaydiumClmm
               ? "Raydium-CLMM"
-              : "Jupiter";
+              : useNativeOrca
+                ? "Orca"
+                : "Jupiter";
     const tokenAmount = result.tokenAmountDelta || 0;
     // Use actual SOL spent from the transaction — not the requested amount.
     // Requested amount can be rounded/slightly off; actual amount is ground truth.
@@ -435,6 +445,8 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
     //   pumpswap / raydium_amm_v4 / raydium_cpmm → pool id + base/quote vaults
     //   pumpfun / raydium_clmm                   → just poolAddress (no vaults)
     const monitorType = buy.monitorType ?? null;
+    // Two-vault venues need both base+quote vaults saved. Whirlpool / CLMM / Pump.fun
+    // are single-account (poolAddress only), no vaults to store.
     const hasTwoVaultMonitoring =
       monitorType === "pumpswap" ||
       monitorType === "raydium_amm_v4" ||

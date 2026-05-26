@@ -26,8 +26,10 @@ import {
 } from "@solana/web3.js";
 import { OnlinePumpAmmSdk, PumpAmmSdk } from "@pump-fun/pump-swap-sdk";
 import { getRaydiumConnection, getTradingWallet } from "./raydiumSwap";
-import { getJupiterSwapExecutionDetails, getJupiterTokenDecimals } from "./jupiterSwap";
+import { getJupiterSwapExecutionDetails } from "./jupiterSwap";
 import { createBotLog } from "./logs";
+import { closeTokenAccountIfEmpty } from "./ataRentRecovery";
+import { getActualTokenBalance } from "./tokenBalance";
 
 dotenv.config({
   path: path.resolve(__dirname, "../../helpers/.env")
@@ -179,8 +181,11 @@ export async function executePumpSwapSell(
     const poolKey = new PublicKey(poolAddress);
     const swapState = await onlineSdk.swapSolanaState(poolKey, wallet.publicKey);
 
-    const tokenDecimals = await getJupiterTokenDecimals(tokenMint);
-    const rawTokenAmount = new BN(Math.max(1, Math.floor(tokenAmount * 10 ** tokenDecimals)).toString());
+    // CRITICAL: sell the live on-chain ATA balance, not position.tokenAmount.
+    // Drift (transfer fees, partial fills, dust) means trusting DB leaves residue
+    // that blocks ATA close → rent stuck. Reading the real balance fixes both.
+    const actual = await getActualTokenBalance(connection, wallet.publicKey, new PublicKey(tokenMint));
+    const rawTokenAmount = actual.balanceRaw;
     const slippagePct = getSlippageBps() / 100;
 
     // sellBaseInput: I have exactly `rawTokenAmount` of base token, want as much SOL as possible.
@@ -194,6 +199,10 @@ export async function executePumpSwapSell(
       tokenMint,
       signatureCount
     });
+
+    // Recover ~0.00204 SOL of ATA rent if the token account is now empty.
+    // Best-effort: doesn't affect the sell result if it fails.
+    closeTokenAccountIfEmpty(connection, wallet, new PublicKey(tokenMint)).catch(() => undefined);
 
     const outputSol = execDetails.actualSolChange !== undefined ? Math.abs(execDetails.actualSolChange) : 0;
     return {

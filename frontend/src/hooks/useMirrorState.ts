@@ -133,9 +133,13 @@ export function useMirrorState(setApiError: (error: string) => void) {
     async (id: string) => {
       setSellPending(id);
       try {
-        const result = await sellMirrorPosition(id);
-        setPositions(result.positions);
-        await getMirrorClosedPositions().then(setClosedPositions);
+        await sellMirrorPosition(id);
+        const [newPositions, newClosed] = await Promise.all([
+          getMirrorPositions(),
+          getMirrorClosedPositions()
+        ]);
+        setPositions(newPositions);
+        setClosedPositions(newClosed);
         setApiError("");
       } catch (error) {
         setApiError(error instanceof Error ? error.message : "Failed to sell mirror position");

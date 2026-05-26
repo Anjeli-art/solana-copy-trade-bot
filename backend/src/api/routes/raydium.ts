@@ -7,6 +7,7 @@ import { executePumpSwapSell } from "../services/pumpswapSwap";
 import { executePumpFunSell } from "../services/pumpfunSwap";
 import { executeRaydiumAmmV4Sell } from "../services/raydiumAmmV4Swap";
 import { executeRaydiumCpmmSell, executeRaydiumClmmSell } from "../services/raydiumCpmmClmmSwap";
+import { executeOrcaWhirlpoolSell } from "../services/orcaWhirlpoolSwap";
 import type { ClosedPosition } from "../types";
 import {
   executeJupiterBuy,
@@ -310,6 +311,8 @@ export async function handleSwap(request: IncomingMessage, response: ServerRespo
       position.monitorType === "raydium_cpmm" && Boolean(position.poolAddress);
     const useNativeRaydiumClmm =
       position.monitorType === "raydium_clmm" && Boolean(position.poolAddress);
+    const useNativeOrca =
+      position.monitorType === "orca_whirlpool" && Boolean(position.poolAddress);
     const executionRoute = useNativePumpSwap
       ? "PumpSwap"
       : useNativePumpFun
@@ -320,7 +323,9 @@ export async function handleSwap(request: IncomingMessage, response: ServerRespo
             ? "Raydium-CPMM"
             : useNativeRaydiumClmm
               ? "Raydium-CLMM"
-              : "Jupiter";
+              : useNativeOrca
+                ? "Orca"
+                : "Jupiter";
     let result;
     try {
       result = useNativePumpSwap
@@ -343,7 +348,14 @@ export async function handleSwap(request: IncomingMessage, response: ServerRespo
                     tokenDecimals,
                     position.poolAddress as string
                   )
-                : await executeJupiterSell(position.tokenMint, position.tokenAmount);
+                : useNativeOrca
+                  ? await executeOrcaWhirlpoolSell(
+                      position.tokenMint,
+                      position.tokenAmount,
+                      tokenDecimals,
+                      position.poolAddress as string
+                    )
+                  : await executeJupiterSell(position.tokenMint, position.tokenAmount);
     } catch (error) {
       await patchActivePosition(position.id, {
         status: "open",

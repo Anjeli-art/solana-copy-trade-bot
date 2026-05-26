@@ -54,6 +54,7 @@ export type ActivePosition = {
     | "raydium_amm_v4"
     | "raydium_cpmm"
     | "raydium_clmm"
+    | "orca_whirlpool"
     | null;
 };
 
@@ -69,6 +70,9 @@ export type ClosedPosition = Omit<ActivePosition, "status" | "currentPriceUsd"> 
   sellPriorityFeeSol?: number;
   sellQuotedOutSol?: number;
   sellActualSolChange?: number;
+  // SOL recovered from closing the empty token ATA after the sell. Bumps the
+  // user-visible PnL — rent is a refundable deposit, not a real trading cost.
+  ataRentRecovered?: number;
 };
 
 export type BotWalletSnapshot = {

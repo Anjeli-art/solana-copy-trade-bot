@@ -19,11 +19,13 @@ import {
   executeRaydiumClmmBuy,
   executeRaydiumClmmSell
 } from "../services/raydiumCpmmClmmSwap";
+import { executeOrcaWhirlpoolBuy, executeOrcaWhirlpoolSell } from "../services/orcaWhirlpoolSwap";
 import { createBotLog } from "../services/logs";
 import { getTokenMetadata } from "../services/tokenMetadata";
 import { refreshWalletBalance } from "../services/walletBalance";
 import { readState } from "../state/store";
 import { withRpcLimit } from "../utils/rpcLimiter";
+import type { ActivePosition } from "../types";
 import { createHeliusWebSocketManager, type HeliusWebSocketManager } from "../utils/heliusWebSocket";
 import BN from "bn.js";
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
@@ -37,6 +39,11 @@ import {
   clmmSellQuoteSol,
   type ClmmPoolDecoded
 } from "../services/raydiumClmmPool";
+import {
+  decodeWhirlpoolFromBase64,
+  whirlpoolSellQuoteSol,
+  type WhirlpoolDecoded
+} from "../services/orcaWhirlpoolPool";
 import type { BondingCurve } from "@pump-fun/pump-sdk";
 
 dotenv.config({
@@ -47,6 +54,15 @@ const DEFAULT_POLL_INTERVAL_MS = 2000;
 const DEFAULT_SIGNATURE_LIMIT = 20;
 const FEE_RESERVE_SOL = 0.01;
 const FULL_SELL_THRESHOLD = 0.95;
+
+type MirrorBuyExecutionResult = {
+  signature?: string;
+  tokenAmountDelta?: number;
+  actualSolChange?: number;
+  networkFeeSol?: number;
+  priorityFeeSol?: number;
+  quotedOutAmount?: number;
+};
 
 type DbMirrorPosition = {
   id: string;
@@ -154,13 +170,7 @@ function createMirrorPosition(input: {
   poolBaseVault?: string;
   poolQuoteVault?: string;
   poolBaseDecimals?: number;
-  monitorType?:
-    | "pumpswap"
-    | "pumpfun"
-    | "raydium_amm_v4"
-    | "raydium_cpmm"
-    | "raydium_clmm"
-    | null;
+  monitorType?: ActivePosition["monitorType"];
 }) {
   db.prepare(`
     INSERT INTO mirror_positions (
@@ -334,30 +344,10 @@ async function handleMirrorBuy(
       buy.monitorType === "raydium_cpmm" && Boolean(buy.poolAddress);
     const useNativeRaydiumClmm =
       buy.monitorType === "raydium_clmm" && Boolean(buy.poolAddress);
-    const result = useNativePumpSwap
-      ? await executePumpSwapBuy(buy.tokenMint, traderBuyAmountSol, buy.poolAddress as string, {
-          shouldSend: isMirrorTradingEnabled
-        })
-      : useNativePumpFun
-        ? await executePumpFunBuy(buy.tokenMint, traderBuyAmountSol, {
-            shouldSend: isMirrorTradingEnabled
-          })
-        : useNativeRaydium
-          ? await executeRaydiumAmmV4Buy(buy.tokenMint, traderBuyAmountSol, buy.poolAddress as string, {
-              shouldSend: isMirrorTradingEnabled
-            })
-          : useNativeRaydiumCpmm
-            ? await executeRaydiumCpmmBuy(buy.tokenMint, traderBuyAmountSol, buy.poolAddress as string, {
-                shouldSend: isMirrorTradingEnabled
-              })
-            : useNativeRaydiumClmm
-              ? await executeRaydiumClmmBuy(buy.tokenMint, traderBuyAmountSol, buy.poolAddress as string, {
-                  shouldSend: isMirrorTradingEnabled
-                })
-              : await executeJupiterBuy(buy.tokenMint, traderBuyAmountSol, {
-                  shouldSend: isMirrorTradingEnabled
-                });
-    const executionRoute = useNativePumpSwap
+    const useNativeOrca =
+      buy.monitorType === "orca_whirlpool" && Boolean(buy.poolAddress);
+    let result: MirrorBuyExecutionResult;
+    let executionRoute = useNativePumpSwap
       ? "PumpSwap"
       : useNativePumpFun
         ? "Pump.fun"
@@ -367,7 +357,42 @@ async function handleMirrorBuy(
             ? "Raydium-CPMM"
             : useNativeRaydiumClmm
               ? "Raydium-CLMM"
-              : "Jupiter";
+              : useNativeOrca
+                ? "Orca"
+                : "Jupiter";
+    if (useNativePumpSwap) {
+      result = await executePumpSwapBuy(buy.tokenMint, traderBuyAmountSol, buy.poolAddress as string, {
+        shouldSend: isMirrorTradingEnabled
+      });
+    } else if (useNativePumpFun) {
+      result = await executePumpFunBuy(buy.tokenMint, traderBuyAmountSol, {
+        shouldSend: isMirrorTradingEnabled
+      });
+    } else if (useNativeRaydium) {
+      result = await executeRaydiumAmmV4Buy(buy.tokenMint, traderBuyAmountSol, buy.poolAddress as string, {
+        shouldSend: isMirrorTradingEnabled
+      });
+    } else if (useNativeRaydiumCpmm) {
+      result = await executeRaydiumCpmmBuy(buy.tokenMint, traderBuyAmountSol, buy.poolAddress as string, {
+        shouldSend: isMirrorTradingEnabled
+      });
+    } else if (useNativeRaydiumClmm) {
+      result = await executeRaydiumClmmBuy(buy.tokenMint, traderBuyAmountSol, buy.poolAddress as string, {
+        shouldSend: isMirrorTradingEnabled
+      });
+    } else if (useNativeOrca) {
+      result = await executeOrcaWhirlpoolBuy(buy.tokenMint, traderBuyAmountSol, buy.poolAddress as string, {
+        shouldSend: isMirrorTradingEnabled
+      });
+    } else {
+      result = await executeJupiterBuy(buy.tokenMint, traderBuyAmountSol, {
+        shouldSend: isMirrorTradingEnabled
+      });
+    }
+
+    if (!result.signature) {
+      throw new Error(`Mirror buy did not return a transaction signature for ${buy.tokenMint}`);
+    }
 
     const tokenAmount = result.tokenAmountDelta || 0;
     const actualSolSpent = result.actualSolChange !== undefined
@@ -517,7 +542,9 @@ async function handleMirrorSell(sell: DetectedTraderSell) {
       position.monitor_type === "raydium_cpmm" && Boolean(position.pool_address);
     const useNativeRaydiumClmm =
       position.monitor_type === "raydium_clmm" && Boolean(position.pool_address);
-    // CPMM/CLMM native sells need token decimals — read from pool record (we saved it).
+    const useNativeOrca =
+      position.monitor_type === "orca_whirlpool" && Boolean(position.pool_address);
+    // CPMM/CLMM/Orca native sells need token decimals — read from pool record (we saved it).
     const tokenDecimals = position.pool_base_decimals ?? 0;
     const result = useNativePumpSwap
       ? await executePumpSwapSell(sell.tokenMint, amountToSell, position.pool_address as string)
@@ -539,7 +566,14 @@ async function handleMirrorSell(sell: DetectedTraderSell) {
                   tokenDecimals,
                   position.pool_address as string
                 )
-              : await executeJupiterSell(sell.tokenMint, amountToSell);
+              : useNativeOrca
+                ? await executeOrcaWhirlpoolSell(
+                    sell.tokenMint,
+                    amountToSell,
+                    tokenDecimals,
+                    position.pool_address as string
+                  )
+                : await executeJupiterSell(sell.tokenMint, amountToSell);
     const solReceived = result.actualSolChange !== undefined
       ? Math.abs(result.actualSolChange)
       : result.outputSol || 0;
@@ -567,7 +601,9 @@ async function handleMirrorSell(sell: DetectedTraderSell) {
                 ? "Raydium-CPMM"
                 : useNativeRaydiumClmm
                   ? "Raydium-CLMM"
-                  : "Jupiter",
+                  : useNativeOrca
+                    ? "Orca"
+                    : "Jupiter",
         closedAt: now()
       });
     } else {
@@ -741,13 +777,30 @@ function mirrorQuoteFromCache(
   pos: DbMirrorPosition,
   vaultAmounts: Map<string, bigint>,
   bondingCurveCache: Map<string, BondingCurve>,
-  clmmPoolCache: Map<string, ClmmPoolDecoded>
+  clmmPoolCache: Map<string, ClmmPoolDecoded>,
+  whirlpoolCache: Map<string, WhirlpoolDecoded>
 ): number {
   if (pos.monitor_type === "raydium_clmm") {
     if (!pos.pool_address) return 0;
     const pool = clmmPoolCache.get(pos.pool_address);
     if (!pool) return 0;
     return clmmSellQuoteSol(pool, pos.token_mint, pos.token_amount, 25);
+  }
+  if (pos.monitor_type === "orca_whirlpool") {
+    if (!pos.pool_address) return 0;
+    if (pos.pool_base_decimals == null) return 0;
+    const pool = whirlpoolCache.get(pos.pool_address);
+    if (!pool) return 0;
+    const memeIsA = pool.mintA === pos.token_mint;
+    const decimalsA = memeIsA ? pos.pool_base_decimals : 9;
+    const decimalsB = memeIsA ? 9 : pos.pool_base_decimals;
+    return whirlpoolSellQuoteSol(
+      pool,
+      pos.token_mint,
+      pos.token_amount,
+      decimalsA,
+      decimalsB
+    );
   }
   if (pos.monitor_type === "pumpfun") {
     if (!pos.pool_address) return 0;
@@ -802,9 +855,10 @@ export async function startMirrorTradeWorker() {
   const vaultAmounts = new Map<string, bigint>();
   const bondingCurveCache = new Map<string, BondingCurve>();
   const clmmPoolCache = new Map<string, ClmmPoolDecoded>();
+  const whirlpoolCache = new Map<string, WhirlpoolDecoded>();
   const subscribedAccounts = new Set<string>();
   const positionsByAccount = new Map<string, Set<string>>();
-  const accountKind = new Map<string, "spltoken" | "bonding" | "clmm_pool">();
+  const accountKind = new Map<string, "spltoken" | "bonding" | "clmm_pool" | "whirlpool">();
 
   const updatePriceForAccount = async (account: string) => {
     const positionIds = positionsByAccount.get(account);
@@ -815,7 +869,7 @@ export async function startMirrorTradeWorker() {
           .prepare("SELECT * FROM mirror_positions WHERE id = ? AND status = 'open'")
           .get(positionId) as DbMirrorPosition | undefined;
         if (!pos) continue;
-        const quotedOutSol = mirrorQuoteFromCache(pos, vaultAmounts, bondingCurveCache, clmmPoolCache);
+        const quotedOutSol = mirrorQuoteFromCache(pos, vaultAmounts, bondingCurveCache, clmmPoolCache, whirlpoolCache);
         if (quotedOutSol <= 0) continue;
         const state = await readState();
         const wallet = await refreshWalletBalance(state.wallet);
@@ -885,6 +939,8 @@ export async function startMirrorTradeWorker() {
           bondingCurveCache.set(account, decodeBondingCurveFromBase64(dataBase64));
         } else if (kind === "clmm_pool") {
           clmmPoolCache.set(account, decodeClmmPoolFromBase64(dataBase64));
+        } else if (kind === "whirlpool") {
+          whirlpoolCache.set(account, decodeWhirlpoolFromBase64(dataBase64, account));
         } else {
           vaultAmounts.set(account, decodeTokenAccountAmount(dataBase64));
         }
@@ -936,7 +992,7 @@ export async function startMirrorTradeWorker() {
         .all() as DbMirrorPosition[];
 
       const requiredAccounts = new Map<string, Set<string>>();
-      const requiredKind = new Map<string, "spltoken" | "bonding" | "clmm_pool">();
+      const requiredKind = new Map<string, "spltoken" | "bonding" | "clmm_pool" | "whirlpool">();
 
       for (const pos of openPositions) {
         if (
@@ -963,6 +1019,12 @@ export async function startMirrorTradeWorker() {
           set.add(pos.id);
           requiredAccounts.set(pos.pool_address, set);
           requiredKind.set(pos.pool_address, "clmm_pool");
+        } else if (pos.monitor_type === "orca_whirlpool") {
+          if (!pos.pool_address) continue;
+          const set = requiredAccounts.get(pos.pool_address) || new Set<string>();
+          set.add(pos.id);
+          requiredAccounts.set(pos.pool_address, set);
+          requiredKind.set(pos.pool_address, "whirlpool");
         }
       }
 
@@ -982,6 +1044,7 @@ export async function startMirrorTradeWorker() {
           vaultAmounts.delete(acc);
           bondingCurveCache.delete(acc);
           clmmPoolCache.delete(acc);
+          whirlpoolCache.delete(acc);
           accountKind.delete(acc);
           wsManager.unsubscribeAccount(acc).catch(() => undefined);
         }

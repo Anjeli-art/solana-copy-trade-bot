@@ -498,15 +498,40 @@ export async function executeJupiterSell(
   tokenAmount: number,
   preQuoteResponse?: JupiterQuote
 ): Promise<JupiterSwapResult> {
-  const tokenDecimals = await getJupiterTokenDecimals(tokenMint);
+  // CRITICAL: sell the live on-chain ATA balance (raw, exact) so the ATA drains to
+  // zero and we can close it afterwards. Position.tokenAmount can drift (transfer
+  // fees, partial fills, airdrops) — trusting it leaves dust that locks rent.
+  // If reading the balance fails (rare — ATA missing, mint gone), fall back to the
+  // legacy ui→raw path so we don't break the call entirely.
+  const { getActualTokenBalance } = await import("./tokenBalance");
+  let rawAmount: string;
+  try {
+    const actual = await getActualTokenBalance(
+      getRaydiumConnection(),
+      getTradingWallet().publicKey,
+      new PublicKey(tokenMint)
+    );
+    rawAmount = actual.balanceRaw.toString();
+    void tokenAmount;
+  } catch {
+    const tokenDecimals = await getJupiterTokenDecimals(tokenMint);
+    rawAmount = toRawAmount(tokenAmount, tokenDecimals);
+  }
   const { signature, tokenAmountDelta, quoteResponse, executionCosts } = await executeJupiterSwap({
     tokenMint,
     side: "sell",
     inputMint: tokenMint,
     outputMint: WSOL_MINT,
-    rawAmount: toRawAmount(tokenAmount, tokenDecimals),
+    rawAmount,
     preQuoteResponse
   });
+
+  // Jupiter doesn't close the meme token ATA, so the rent (~0.00204 SOL) stays
+  // locked. Fire a separate close transaction after the swap settles. Best-effort:
+  // dynamic import keeps the module graph cycle-free (ataRentRecovery → logs → ...).
+  void import("./ataRentRecovery").then(({ closeTokenAccountIfEmpty }) =>
+    closeTokenAccountIfEmpty(getRaydiumConnection(), getTradingWallet(), new PublicKey(tokenMint))
+  ).catch(() => undefined);
 
   return {
     tokenMint,

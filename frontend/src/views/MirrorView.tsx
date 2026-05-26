@@ -20,7 +20,10 @@ type MirrorViewProps = {
   onSellPosition: (id: string) => void;
 };
 
-function shortAddr(addr: string) {
+function shortAddr(addr?: string | null) {
+  if (!addr) {
+    return "-";
+  }
   return `${addr.slice(0, 6)}...${addr.slice(-6)}`;
 }
 
@@ -64,7 +67,10 @@ export function MirrorView({
     ? parsedBuyAmount * solPriceUsd
     : null;
 
-  async function copyAddr(addr: string) {
+  async function copyAddr(addr?: string | null) {
+    if (!addr) {
+      return;
+    }
     await navigator.clipboard.writeText(addr);
     setCopiedAddr(addr);
     window.setTimeout(() => setCopiedAddr((c) => (c === addr ? null : c)), 1200);
@@ -119,8 +125,15 @@ export function MirrorView({
           </span>
         </div>
         <div className="mirror-buy-badge">
-          <strong>{trader.buyAmountSol}</strong>
-          <span>SOL/buy</span>
+          <div className="mirror-buy-main">
+            <strong>{trader.buyAmountSol}</strong>
+            {solPriceUsd > 0 && (
+              <span className="mirror-buy-usd">
+                ≈ ${(trader.buyAmountSol * solPriceUsd).toFixed(2)}
+              </span>
+            )}
+          </div>
+          <span className="mirror-buy-label">SOL/buy</span>
         </div>
         <button
           className={`icon-button trader-toggle-button${paused ? " resume" : " pause"}`}
@@ -143,12 +156,16 @@ export function MirrorView({
   }
 
   function getTokenLabel(pos: MirrorPosition | MirrorClosedPosition) {
-    return pos.tokenName || pos.tokenSymbol;
+    // Fall back through tokenName → tokenSymbol → short mint → "—" so a position
+    // with missing metadata (e.g. brand-new mint Helius didn't index yet) never
+    // renders `undefined` or, worse, crashes the row via .slice on undefined.
+    return pos?.tokenName || pos?.tokenSymbol || shortAddr(pos?.tokenMint) || "—";
   }
 
   function getTokenDetails(pos: MirrorPosition | MirrorClosedPosition) {
+    if (!pos) return "—";
     return pos.tokenName
-      ? `${pos.tokenSymbol} · ${shortAddr(pos.tokenMint)}`
+      ? `${pos.tokenSymbol || ""} · ${shortAddr(pos.tokenMint)}`
       : shortAddr(pos.tokenMint);
   }
 
@@ -328,7 +345,12 @@ export function MirrorView({
                   })}
 
                   {closedPositions.map((pos) => {
-                    const pnl = pos.solReceived != null ? pos.solReceived - pos.solSpent : null;
+                    // ATA rent is a deposit, not a cost — credit it back to PnL so the
+                    // wallet-level view matches what's shown here.
+                    const rentRecovered = pos.ataRentRecovered ?? 0;
+                    const pnl = pos.solReceived != null
+                      ? pos.solReceived + rentRecovered - pos.solSpent
+                      : null;
                     const pct = pnl != null && pos.solSpent > 0 ? (pnl / pos.solSpent) * 100 : null;
                     const tokenLabel = getTokenLabel(pos);
                     const tokenDetails = getTokenDetails(pos);
@@ -367,13 +389,9 @@ export function MirrorView({
                           ) : (
                             <>
                               <strong>—</strong>
-                              <span>closed</span>
+                              <span>—</span>
                             </>
                           )}
-                        </div>
-                        <div className="position-cell">
-                          <span>Closed</span>
-                          <strong>{formatDistanceToNow(new Date(pos.closedAt))}</strong>
                         </div>
                         <div className={`position-cell sol-result ${pnl == null || pnl >= 0 ? "positive" : "negative"}`}>
                           <span>Net SOL</span>
@@ -381,24 +399,49 @@ export function MirrorView({
                           <small>{pos.solReceived != null ? `${formatSol(pos.solReceived)} out` : ""}</small>
                         </div>
                         <div className="close-meta mirror-close-meta">
-                          <div className="platform-stack">
-                            <span>{pos.buyPlatform || "Mirror"}</span>
-                            <strong>{pos.exitPlatform || (pos.closeReason === "mirror-sell" ? "Jupiter" : pos.closeReason)}</strong>
+                          {(() => {
+                            // Top line: where the position was bought.
+                            // Bottom line: how it was closed.
+                            // We ALWAYS show a close-reason badge now — previously "mirror-sell"
+                            // was suppressed, which made auto vs manual visually indistinguishable.
+                            // Friendlier labels: "mirror-sell" → "auto", anything else → as-is.
+                            const buyLabel = pos.buyPlatform || "Mirror";
+                            const exitLabel = pos.exitPlatform || null;
+                            const samePlatform = exitLabel && buyLabel === exitLabel;
+                            const friendlyReason = (() => {
+                              if (!pos.closeReason) return null;
+                              if (pos.closeReason === "mirror-sell") return "auto";
+                              return pos.closeReason;
+                            })();
+                            // If buy/exit platforms differ, the exit platform is the most
+                            // informative bottom line. Otherwise show the close reason badge.
+                            const bottomLine = !samePlatform && exitLabel
+                              ? exitLabel
+                              : friendlyReason;
+                            return (
+                              <div className="platform-stack">
+                                <span>{buyLabel}</span>
+                                {bottomLine && <strong>{bottomLine}</strong>}
+                              </div>
+                            );
+                          })()}
+                          <div className="mirror-tx-stack">
+                            <small className="mirror-closed-at">Closed · {formatDistanceToNow(new Date(pos.closedAt))}</small>
+                            {pos.sellTx ? (
+                              <a
+                                className="reason-pill mirror-tx-pill"
+                                href={solscanTx(pos.sellTx)}
+                                target="_blank"
+                                rel="noreferrer"
+                                title={pos.sellTx}
+                              >
+                                Tx
+                                <ExternalLink size={11} />
+                              </a>
+                            ) : (
+                              <div className="reason-pill">{pos.closeReason}</div>
+                            )}
                           </div>
-                          {pos.sellTx ? (
-                            <a
-                              className="reason-pill mirror-tx-pill"
-                              href={solscanTx(pos.sellTx)}
-                              target="_blank"
-                              rel="noreferrer"
-                              title={pos.sellTx}
-                            >
-                              Tx
-                              <ExternalLink size={11} />
-                            </a>
-                          ) : (
-                            <div className="reason-pill">{pos.closeReason}</div>
-                          )}
                         </div>
                       </article>
                     );
@@ -409,17 +452,32 @@ export function MirrorView({
       </section>
 
       {/* Sell confirmation */}
-      {sellConfirm && (
-        <ConfirmModal
-          title={`Sell ${sellConfirm.tokenSymbol}?`}
-          description={`Sell all ${sellConfirm.tokenAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} tokens via Jupiter`}
-          confirmLabel="Sell"
-          cancelLabel="Cancel"
-          variant="danger"
-          onConfirm={() => { onSellPosition(sellConfirm.id); setSellConfirm(null); }}
-          onCancel={() => setSellConfirm(null)}
-        />
-      )}
+      {sellConfirm && (() => {
+        // Defensive formatting: if tokenAmount comes back as undefined/NaN (e.g. a partial
+        // backend response after a failed sell), don't crash the whole tree on .toLocaleString.
+        const amt = Number(sellConfirm.tokenAmount);
+        const amtStr = Number.isFinite(amt)
+          ? amt.toLocaleString(undefined, { maximumFractionDigits: 2 })
+          : "all";
+        const sym = sellConfirm.tokenSymbol || shortAddr(sellConfirm.tokenMint);
+        // Pick the route label honestly — we go native if we know the platform, otherwise
+        // Jupiter is the fallback. The old text said "via Jupiter" unconditionally, which
+        // was a lie for Pump.fun / PumpSwap / Raydium / Orca native sells.
+        const route = sellConfirm.monitorType
+          ? `via ${sellConfirm.buyPlatform || sellConfirm.monitorType}`
+          : "via Jupiter";
+        return (
+          <ConfirmModal
+            title={`Sell ${sym}?`}
+            description={`Sell all ${amtStr} tokens ${route}`}
+            confirmLabel="Sell"
+            cancelLabel="Cancel"
+            variant="danger"
+            onConfirm={() => { onSellPosition(sellConfirm.id); setSellConfirm(null); }}
+            onCancel={() => setSellConfirm(null)}
+          />
+        );
+      })()}
 
       {/* Remove trader confirmation */}
       {removeConfirm && (

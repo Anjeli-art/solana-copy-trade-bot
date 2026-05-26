@@ -335,3 +335,12 @@ for (const column of ["buy_platform", "exit_platform"]) {
     db.exec(`ALTER TABLE mirror_closed_positions ADD COLUMN ${column} TEXT`);
   }
 }
+// ATA rent that came back when the empty token account was closed after the sell.
+// Tracked separately so the UI can show a corrected PnL (rent is a deposit, not a cost).
+if (!mirrorClosedColumns.some((c) => c.name === "ata_rent_recovered")) {
+  db.exec("ALTER TABLE mirror_closed_positions ADD COLUMN ata_rent_recovered REAL NOT NULL DEFAULT 0");
+}
+const closedColumnsForRent = db.prepare("PRAGMA table_info(closed_positions)").all() as Array<{ name: string }>;
+if (!closedColumnsForRent.some((c) => c.name === "ata_rent_recovered")) {
+  db.exec("ALTER TABLE closed_positions ADD COLUMN ata_rent_recovered REAL NOT NULL DEFAULT 0");
+}

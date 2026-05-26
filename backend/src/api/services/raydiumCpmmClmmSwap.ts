@@ -31,6 +31,8 @@ import { NATIVE_MINT } from "@solana/spl-token";
 import { getRaydiumConnection, getTradingWallet } from "./raydiumSwap";
 import { getJupiterSwapExecutionDetails } from "./jupiterSwap";
 import { createBotLog } from "./logs";
+import { closeTokenAccountIfEmpty } from "./ataRentRecovery";
+import { getActualTokenBalance } from "./tokenBalance";
 
 dotenv.config({
   path: path.resolve(__dirname, "../../helpers/.env")
@@ -196,7 +198,16 @@ export async function executeRaydiumCpmmSell(
     if (!poolInfo) throw new Error(`CPMM pool not found for id ${poolId}`);
 
     const rpcData = await raydium.cpmm.getRpcPoolInfo(poolId, true);
-    const inputAmount = new BN(new Decimal(tokenAmount).mul(10 ** tokenDecimals).toFixed(0));
+    // CRITICAL: use the live ATA balance, not the DB tokenAmount, so we sell to a
+    // clean zero and the ATA can be closed afterwards. `tokenDecimals` is kept only
+    // as a fallback signal — `getActualTokenBalance` also returns decimals from chain.
+    const actual = await getActualTokenBalance(
+      getRaydiumConnection(),
+      getTradingWallet().publicKey,
+      new PublicKey(tokenMint)
+    );
+    const inputAmount = actual.balanceRaw;
+    void tokenAmount; void tokenDecimals;
 
     // Selling base (meme) for quote (SOL)
     const swapResult = CurveCalculator.swap(
@@ -225,6 +236,12 @@ export async function executeRaydiumCpmmSell(
       tokenMint,
       signatureCount
     });
+
+    closeTokenAccountIfEmpty(
+      getRaydiumConnection(),
+      getTradingWallet(),
+      new PublicKey(tokenMint)
+    ).catch(() => undefined);
 
     const outputSol = execDetails.actualSolChange !== undefined ? Math.abs(execDetails.actualSolChange) : 0;
     return {
@@ -342,7 +359,14 @@ export async function executeRaydiumClmmSell(
     if (!poolInfo) throw new Error(`CLMM pool not found for id ${poolId}`);
 
     const observationId = await getClmmObservationId(poolId);
-    const amountIn = new BN(new Decimal(tokenAmount).mul(10 ** tokenDecimals).toFixed(0));
+    // CRITICAL: sell live ATA balance — see CPMM sell for rationale.
+    const actual = await getActualTokenBalance(
+      getRaydiumConnection(),
+      getTradingWallet().publicKey,
+      new PublicKey(tokenMint)
+    );
+    const amountIn = actual.balanceRaw;
+    void tokenAmount; void tokenDecimals;
     const amountOutMin = new BN(1);
 
     const { transaction } = (await raydium.clmm.swap({
@@ -362,6 +386,12 @@ export async function executeRaydiumClmmSell(
       tokenMint,
       signatureCount
     });
+
+    closeTokenAccountIfEmpty(
+      getRaydiumConnection(),
+      getTradingWallet(),
+      new PublicKey(tokenMint)
+    ).catch(() => undefined);
 
     const outputSol = execDetails.actualSolChange !== undefined ? Math.abs(execDetails.actualSolChange) : 0;
     return {

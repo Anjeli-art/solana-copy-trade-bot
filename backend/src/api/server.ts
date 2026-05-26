@@ -11,9 +11,9 @@ import { handleTokens } from "./routes/tokens";
 import { handleTraders } from "./routes/traders";
 import { handleMirror } from "./routes/mirror";
 import { handleTrading } from "./routes/trading";
-import { handleWallet } from "./routes/wallet";
+import { handleWallet, handleWalletSweepRent } from "./routes/wallet";
 import { refreshWalletBalance } from "./services/walletBalance";
-import { readState } from "./state/store";
+import { readState, saveWallet } from "./state/store";
 
 const host = process.env.API_HOST || "127.0.0.1";
 const port = Number(process.env.API_PORT || 3001);
@@ -62,6 +62,11 @@ const server = http.createServer(async (request, response) => {
 
     if (url.pathname === "/api/wallet") {
       await handleWallet(request, response);
+      return;
+    }
+
+    if (url.pathname === "/api/wallet/sweep-rent" && request.method === "POST") {
+      await handleWalletSweepRent(request, response);
       return;
     }
 
@@ -130,3 +135,21 @@ const server = http.createServer(async (request, response) => {
 server.listen(port, host, () => {
   console.log(`Copy bot API listening at http://${host}:${port}`);
 });
+
+// Periodically refresh SOL price + wallet balance so workers (and the UI) always have
+// a fresh quote when computing USD PnL. Without this, solPriceUsd ages indefinitely
+// because workers call refreshWalletBalance() but don't persist back.
+// Defaults to every 60s. Override via WALLET_REFRESH_INTERVAL_MS.
+const WALLET_REFRESH_INTERVAL_MS = Number(process.env.WALLET_REFRESH_INTERVAL_MS) || 60_000;
+setInterval(async () => {
+  try {
+    const state = await readState();
+    const refreshed = await refreshWalletBalance(state.wallet);
+    await saveWallet(refreshed);
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "WALLET_REFRESH_TICK_FAILED",
+      message: error instanceof Error ? error.message : "Unknown wallet refresh error"
+    }));
+  }
+}, WALLET_REFRESH_INTERVAL_MS);
