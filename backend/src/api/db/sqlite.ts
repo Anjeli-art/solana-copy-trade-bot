@@ -275,6 +275,20 @@ for (const column of [
 if (!activePositionColumns.some((column) => column.name === "profit_tier")) {
   db.exec("ALTER TABLE active_positions ADD COLUMN profit_tier TEXT NOT NULL DEFAULT 'low'");
 }
+// Pool monitoring fields for direct WebSocket price feed (PumpSwap and future native DEXes).
+// pool_address     — pool PDA / bonding curve address
+// pool_base_vault  — pool's base (meme) token vault, source of base reserve
+// pool_quote_vault — pool's quote (WSOL) token vault, source of quote reserve
+// pool_base_decimals — decimals of base token, needed for price math
+// monitor_type     — "pumpswap" | "pumpfun" | null. Null = fall back to Jupiter polling.
+for (const column of ["pool_address", "pool_base_vault", "pool_quote_vault", "monitor_type"]) {
+  if (!activePositionColumns.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE active_positions ADD COLUMN ${column} TEXT`);
+  }
+}
+if (!activePositionColumns.some((c) => c.name === "pool_base_decimals")) {
+  db.exec("ALTER TABLE active_positions ADD COLUMN pool_base_decimals INTEGER");
+}
 
 const closedPositionColumns = db.prepare("PRAGMA table_info(closed_positions)").all() as Array<{ name: string }>;
 for (const column of [
@@ -299,4 +313,25 @@ if (!closedPositionColumns.some((column) => column.name === "profit_tier")) {
 const logColumns = db.prepare("PRAGMA table_info(bot_logs)").all() as Array<{ name: string }>;
 if (!logColumns.some((column) => column.name === "wallet")) {
   db.exec("ALTER TABLE bot_logs ADD COLUMN wallet TEXT");
+}
+
+// Mirror positions also get pool monitoring fields for the same WebSocket price feed.
+const mirrorPositionColumns = db.prepare("PRAGMA table_info(mirror_positions)").all() as Array<{ name: string }>;
+for (const column of ["pool_address", "pool_base_vault", "pool_quote_vault", "monitor_type", "buy_platform"]) {
+  if (!mirrorPositionColumns.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE mirror_positions ADD COLUMN ${column} TEXT`);
+  }
+}
+if (!mirrorPositionColumns.some((c) => c.name === "pool_base_decimals")) {
+  db.exec("ALTER TABLE mirror_positions ADD COLUMN pool_base_decimals INTEGER");
+}
+
+// Mirror closed positions track which venue the original buy was on and which one
+// actually executed the sell. The UI uses these to render the platform pill instead of
+// a hardcoded "Mirror manual" label.
+const mirrorClosedColumns = db.prepare("PRAGMA table_info(mirror_closed_positions)").all() as Array<{ name: string }>;
+for (const column of ["buy_platform", "exit_platform"]) {
+  if (!mirrorClosedColumns.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE mirror_closed_positions ADD COLUMN ${column} TEXT`);
+  }
 }

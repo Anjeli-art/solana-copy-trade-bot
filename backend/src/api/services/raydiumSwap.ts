@@ -108,7 +108,7 @@ async function getTokenDecimals(connection: Connection, mint: PublicKey) {
   return decimals;
 }
 
-async function formatAmmKeysById(connection: Connection, id: PublicKey) {
+export async function formatAmmKeysById(connection: Connection, id: PublicKey) {
   const account = await connection.getAccountInfo(id);
   if (!account) {
     throw new Error(`Raydium AMM pool not found: ${id.toBase58()}`);

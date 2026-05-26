@@ -9,6 +9,10 @@ import {
   type DetectedTraderBuy
 } from "../platforms/platformDetector";
 import { executeJupiterBuy } from "../services/jupiterSwap";
+import { executePumpSwapBuy } from "../services/pumpswapSwap";
+import { executePumpFunBuy } from "../services/pumpfunSwap";
+import { executeRaydiumAmmV4Buy } from "../services/raydiumAmmV4Swap";
+import { executeRaydiumCpmmBuy, executeRaydiumClmmBuy } from "../services/raydiumCpmmClmmSwap";
 import { createBotLog } from "../services/logs";
 import { logTokenSafetyBeforeBuy } from "../services/tokenSafety";
 import { isTokenBlacklisted } from "../services/tokenBlacklist";
@@ -16,6 +20,7 @@ import { getTokenMetadata } from "../services/tokenMetadata";
 import { refreshWalletBalance } from "../services/walletBalance";
 import { addActivePosition, readState } from "../state/store";
 import { withRpcLimit } from "../utils/rpcLimiter";
+import { createHeliusWebSocketManager, type HeliusWebSocketManager } from "../utils/heliusWebSocket";
 
 dotenv.config({
   path: path.resolve(__dirname, "../../helpers/.env")
@@ -348,23 +353,75 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
       return;
     }
 
-    const result = await executeJupiterBuy(buy.tokenMint, amountSol, {
-      shouldSend: isCopyTradingEnabled,
-      onSignature: (signature) => {
-        markProcessed({
-          signature: buy.signature,
-          trader: buy.trader,
-          tokenMint: buy.tokenMint,
-          status: "tx_sent",
-          message: signature
-        });
-        updateTokenBuyLock({
-          tokenMint: buy.tokenMint,
-          status: "tx_sent",
-          message: signature
-        });
-      }
-    });
+    // Route per detected venue (buy.monitorType is set by the platform detector):
+    //   pumpswap         → native PumpSwap
+    //   pumpfun          → native Pump.fun bonding curve
+    //   raydium_amm_v4   → native Raydium AMM v4
+    //   raydium_cpmm     → native Raydium CPMM
+    //   raydium_clmm     → native Raydium CLMM
+    //   else             → Jupiter fallback
+    const useNativePumpSwap = buy.monitorType === "pumpswap" && Boolean(buy.poolAddress);
+    const useNativePumpFun = buy.monitorType === "pumpfun" && Boolean(buy.poolAddress);
+    const useNativeRaydium =
+      buy.monitorType === "raydium_amm_v4" && Boolean(buy.poolAddress) && Boolean(buy.poolBaseVault);
+    const useNativeRaydiumCpmm =
+      buy.monitorType === "raydium_cpmm" && Boolean(buy.poolAddress);
+    const useNativeRaydiumClmm =
+      buy.monitorType === "raydium_clmm" && Boolean(buy.poolAddress);
+    const onSignature = (signature: string) => {
+      markProcessed({
+        signature: buy.signature,
+        trader: buy.trader,
+        tokenMint: buy.tokenMint,
+        status: "tx_sent",
+        message: signature
+      });
+      updateTokenBuyLock({
+        tokenMint: buy.tokenMint,
+        status: "tx_sent",
+        message: signature
+      });
+    };
+    const result = useNativePumpSwap
+      ? await executePumpSwapBuy(buy.tokenMint, amountSol, buy.poolAddress as string, {
+          shouldSend: isCopyTradingEnabled,
+          onSignature
+        })
+      : useNativePumpFun
+        ? await executePumpFunBuy(buy.tokenMint, amountSol, {
+            shouldSend: isCopyTradingEnabled,
+            onSignature
+          })
+        : useNativeRaydium
+          ? await executeRaydiumAmmV4Buy(buy.tokenMint, amountSol, buy.poolAddress as string, {
+              shouldSend: isCopyTradingEnabled,
+              onSignature
+            })
+          : useNativeRaydiumCpmm
+            ? await executeRaydiumCpmmBuy(buy.tokenMint, amountSol, buy.poolAddress as string, {
+                shouldSend: isCopyTradingEnabled,
+                onSignature
+              })
+            : useNativeRaydiumClmm
+              ? await executeRaydiumClmmBuy(buy.tokenMint, amountSol, buy.poolAddress as string, {
+                  shouldSend: isCopyTradingEnabled,
+                  onSignature
+                })
+              : await executeJupiterBuy(buy.tokenMint, amountSol, {
+                  shouldSend: isCopyTradingEnabled,
+                  onSignature
+                });
+    const executionRoute = useNativePumpSwap
+      ? "PumpSwap"
+      : useNativePumpFun
+        ? "Pump.fun"
+        : useNativeRaydium
+          ? "Raydium"
+          : useNativeRaydiumCpmm
+            ? "Raydium-CPMM"
+            : useNativeRaydiumClmm
+              ? "Raydium-CLMM"
+              : "Jupiter";
     const tokenAmount = result.tokenAmountDelta || 0;
     // Use actual SOL spent from the transaction — not the requested amount.
     // Requested amount can be rounded/slightly off; actual amount is ground truth.
@@ -372,6 +429,16 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
     const amountUsd = actualSolSpent * wallet.solPriceUsd;
     const entryPriceUsd = tokenAmount > 0 && amountUsd > 0 ? amountUsd / tokenAmount : 0;
     const tokenMetadata = await getTokenMetadata(buy.tokenMint).catch(() => undefined);
+
+    // Pool / bonding-curve metadata for native WebSocket monitoring. The detector
+    // already resolved the subtype into buy.monitorType, so we just trust it.
+    //   pumpswap / raydium_amm_v4 / raydium_cpmm → pool id + base/quote vaults
+    //   pumpfun / raydium_clmm                   → just poolAddress (no vaults)
+    const monitorType = buy.monitorType ?? null;
+    const hasTwoVaultMonitoring =
+      monitorType === "pumpswap" ||
+      monitorType === "raydium_amm_v4" ||
+      monitorType === "raydium_cpmm";
 
     await addActivePosition(
       {
@@ -394,7 +461,12 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
         tokenAmount,
         openedAt: new Date().toISOString(),
         status: "open",
-        profitTier: "high"
+        profitTier: "high",
+        poolAddress: monitorType ? buy.poolAddress : undefined,
+        poolBaseVault: hasTwoVaultMonitoring ? buy.poolBaseVault : undefined,
+        poolQuoteVault: hasTwoVaultMonitoring ? buy.poolQuoteVault : undefined,
+        poolBaseDecimals: monitorType ? tokenMetadata?.decimals : undefined,
+        monitorType
       },
       wallet
     );
@@ -413,7 +485,7 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
     });
     createBotLog({
       event: "COPY_BUY_EXECUTED",
-      message: `Copied ${buy.platform} buy through Jupiter for ${amountSol} SOL`,
+      message: `Copied ${buy.platform} buy through ${executionRoute} for ${amountSol} SOL`,
       trader: buy.trader,
       tokenMint: buy.tokenMint,
       signature: result.signature,
@@ -422,7 +494,7 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
         tokenAmount,
         entryPriceUsd,
         sourcePlatform: buy.platform,
-        executionRoute: "Jupiter",
+        executionRoute,
         quotedOutAmount: result.quotedOutAmount,
         networkFeeSol: result.networkFeeSol,
         priorityFeeSol: result.priorityFeeSol,
@@ -439,7 +511,7 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
         botSignature: result.signature,
         tokenAmount,
         platform: buy.platform,
-        executionRoute: "Jupiter",
+        executionRoute,
         traderSpentSol: buy.spentSol,
         traderEntryPriceUsd: buy.traderEntryPriceUsd
       })
@@ -507,6 +579,66 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
   }
 }
 
+async function processSingleSignature(
+  connection: Connection,
+  trader: string,
+  signature: string,
+  solPriceUsd: number
+) {
+  if (isProcessed(signature)) {
+    return;
+  }
+
+  let transaction;
+  try {
+    transaction = await withRpcLimit(() =>
+      connection.getParsedTransaction(signature, {
+        commitment: "confirmed",
+        maxSupportedTransactionVersion: 0
+      })
+    );
+  } catch (error) {
+    logRpcRequestFailed({
+      method: "getParsedTransaction",
+      trader,
+      signature,
+      endpoint: getRpcEndpoint(),
+      error
+    });
+    return;
+  }
+
+  if (!transaction) {
+    return;
+  }
+
+  const unmatchedBuyLikes = detectUnmatchedTraderBuyLikes(transaction, trader, signature);
+  for (const buyLike of unmatchedBuyLikes) {
+    createBotLog({
+      level: "warn",
+      event: "TRADER_BUY_PLATFORM_UNMATCHED",
+      message: `Tracked trader received ${buyLike.tokenMint}, but platform was not matched`,
+      trader: buyLike.trader,
+      tokenMint: buyLike.tokenMint,
+      signature: buyLike.signature,
+      metadata: {
+        tokenAmount: buyLike.tokenAmount,
+        spentSol: buyLike.spentSol,
+        solChange: buyLike.solChange,
+        wsolChange: buyLike.wsolChange,
+        slot: buyLike.slot,
+        blockTime: buyLike.blockTime,
+        mentionedPrograms: buyLike.mentionedPrograms.slice(0, 40)
+      }
+    });
+  }
+
+  const buys = detectTraderPlatformBuys(transaction, trader, signature, solPriceUsd);
+  for (const buy of buys) {
+    await handleDetectedBuy(buy);
+  }
+}
+
 async function processTraderSignatures(
   connection: Connection,
   trader: string,
@@ -537,61 +669,11 @@ async function processTraderSignatures(
     .reverse()
     .filter((s) => !s.err && !isProcessed(s.signature));
 
-  // Fetch all transactions in parallel, rate-limited by RPC_MAX_CONCURRENT
-  const transactions = await Promise.allSettled(
-    newSignatures.map((s) =>
-      withRpcLimit(() =>
-        connection.getParsedTransaction(s.signature, {
-          commitment: "confirmed",
-          maxSupportedTransactionVersion: 0
-        })
-      )
-    )
-  );
-
-  // Process results sequentially to avoid buy race conditions
-  for (let i = 0; i < newSignatures.length; i++) {
-    const result = transactions[i];
-    if (result.status === "rejected") {
-      logRpcRequestFailed({
-        method: "getParsedTransaction",
-        trader,
-        signature: newSignatures[i].signature,
-        endpoint: getRpcEndpoint(),
-        error: result.reason
-      });
-      continue;
-    }
-
-    const transaction = result.value;
-    if (!transaction) continue;
-
-    const sig = newSignatures[i].signature;
-    const unmatchedBuyLikes = detectUnmatchedTraderBuyLikes(transaction, trader, sig);
-    for (const buyLike of unmatchedBuyLikes) {
-      createBotLog({
-        level: "warn",
-        event: "TRADER_BUY_PLATFORM_UNMATCHED",
-        message: `Tracked trader received ${buyLike.tokenMint}, but platform was not matched`,
-        trader: buyLike.trader,
-        tokenMint: buyLike.tokenMint,
-        signature: buyLike.signature,
-        metadata: {
-          tokenAmount: buyLike.tokenAmount,
-          spentSol: buyLike.spentSol,
-          solChange: buyLike.solChange,
-          wsolChange: buyLike.wsolChange,
-          slot: buyLike.slot,
-          blockTime: buyLike.blockTime,
-          mentionedPrograms: buyLike.mentionedPrograms.slice(0, 40)
-        }
-      });
-    }
-
-    const buys = detectTraderPlatformBuys(transaction, trader, sig, wallet.solPriceUsd);
-    for (const buy of buys) {
-      await handleDetectedBuy(buy);
-    }
+  // Process sequentially through the shared single-signature handler.
+  // Deduplication via `isProcessed` is handled inside processSingleSignature,
+  // so polling and WebSocket pipelines can safely overlap.
+  for (const s of newSignatures) {
+    await processSingleSignature(connection, trader, s.signature, wallet.solPriceUsd);
   }
 
   return signatures[signatures.length - 1]?.signature || lastSeenSignature;
@@ -608,13 +690,59 @@ export async function startCopyTradeWorker() {
   const includeHistory = shouldIncludeHistory();
   const lastSeenByTrader = new Map<string, string | undefined>();
 
-  console.log(`Copy-trade worker started. Poll interval: ${pollIntervalMs}ms`);
+  // WebSocket pipeline: push signatures the moment Helius confirms them.
+  // Polling stays on as a slow fallback so disconnects / silent drops
+  // don't lose buys. Deduplication is enforced by isProcessed/processed_signatures.
+  const wsManager: HeliusWebSocketManager | null = createHeliusWebSocketManager();
+  if (wsManager) {
+    wsManager.on("connect", () => {
+      console.log(JSON.stringify({ event: "COPY_WS_CONNECTED" }));
+      createBotLog({ event: "COPY_WS_CONNECTED", message: "Copy WebSocket connected" });
+    });
+    wsManager.on("disconnect", (reason) => {
+      console.log(JSON.stringify({ event: "COPY_WS_DISCONNECTED", reason }));
+      createBotLog({
+        level: "info",
+        event: "COPY_WS_DISCONNECTED",
+        message: `Copy WebSocket disconnected (${reason}); auto-reconnect in progress`,
+        metadata: { reason }
+      });
+    });
+    wsManager.on("error", (error) => {
+      console.error(JSON.stringify({ event: "COPY_WS_ERROR", message: error.message }));
+      createBotLog({
+        level: "warn",
+        event: "COPY_WS_ERROR",
+        message: error.message,
+        metadata: { source: "websocket" }
+      });
+    });
+    wsManager.on("notification", async ({ trader, signature, err }) => {
+      if (err) return;
+      if (!isCopyTradingEnabled()) return;
+      try {
+        const state = await readState();
+        const wallet = await refreshWalletBalance(state.wallet);
+        await processSingleSignature(connection, trader, signature, wallet.solPriceUsd);
+        // Advance lastSeen so polling fallback doesn't re-fetch this one.
+        lastSeenByTrader.set(trader, signature);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown copy WS handler error";
+        console.error(JSON.stringify({ event: "COPY_WS_HANDLER_ERROR", trader, signature, message }));
+      }
+    });
+    wsManager.start();
+  } else {
+    console.log("WEBSOCKET_ENDPOINT not set — copy-trade worker will rely on polling only");
+  }
+
+  console.log(`Copy-trade worker started. Poll interval: ${pollIntervalMs}ms (fallback). WS: ${wsManager ? "on" : "off"}`);
   console.log(`Historical signatures on startup: ${includeHistory ? "enabled" : "skipped"}`);
   console.log("Real multi-platform buy execution through Jupiter: enabled");
   createBotLog({
     event: "COPY_WORKER_STARTED",
-    message: `Copy-trade worker started. Poll: ${pollIntervalMs}ms, history: ${includeHistory ? "on" : "off"}`,
-    metadata: { pollIntervalMs, includeHistory }
+    message: `Copy-trade worker started. Poll: ${pollIntervalMs}ms (fallback), history: ${includeHistory ? "on" : "off"}, WS: ${wsManager ? "on" : "off"}`,
+    metadata: { pollIntervalMs, includeHistory, websocket: Boolean(wsManager) }
   });
 
   while (true) {
@@ -624,11 +752,22 @@ export async function startCopyTradeWorker() {
         event: "COPY_WORKER_STOPPED",
         message: "Copy-trade worker stopped: copy trading disabled"
       });
+      if (wsManager) wsManager.close();
       return;
     }
 
     const state = await readState();
     const traders = state.trackedTraders.filter((trader) => trader.enabled);
+
+    // Keep WS subscriptions in sync with the current enabled trader list.
+    if (wsManager) {
+      wsManager.syncSubscriptions(traders.map((t) => t.address)).catch((error) => {
+        console.error(JSON.stringify({
+          event: "COPY_WS_SYNC_ERROR",
+          message: error instanceof Error ? error.message : String(error)
+        }));
+      });
+    }
 
     await Promise.all(traders.map(async (trader) => {
       try {

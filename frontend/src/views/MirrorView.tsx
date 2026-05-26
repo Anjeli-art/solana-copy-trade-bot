@@ -312,7 +312,9 @@ export function MirrorView({
                         <span>Amount</span>
                         <strong>{formatNumber(pos.tokenAmount)}</strong>
                       </div>
-                      <div className="platform-pill">Mirror</div>
+                      <div className="platform-pill" title={pos.monitorType ? `Native: ${pos.monitorType}` : "Jupiter fallback"}>
+                        {pos.buyPlatform || "Mirror"}
+                      </div>
                       <button
                         className="sell-button"
                         type="button"
@@ -380,8 +382,8 @@ export function MirrorView({
                         </div>
                         <div className="close-meta mirror-close-meta">
                           <div className="platform-stack">
-                            <span>Mirror</span>
-                            <strong>{pos.closeReason === "mirror-sell" ? "Jupiter" : pos.closeReason}</strong>
+                            <span>{pos.buyPlatform || "Mirror"}</span>
+                            <strong>{pos.exitPlatform || (pos.closeReason === "mirror-sell" ? "Jupiter" : pos.closeReason)}</strong>
                           </div>
                           {pos.sellTx ? (
                             <a

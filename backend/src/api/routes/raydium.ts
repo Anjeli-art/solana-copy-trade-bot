@@ -3,6 +3,11 @@ import { randomUUID } from "crypto";
 import { readJsonBody } from "../http/request";
 import { sendError, sendJson } from "../http/response";
 import { findRaydiumPoolId } from "../services/raydiumSwap";
+import { executePumpSwapSell } from "../services/pumpswapSwap";
+import { executePumpFunSell } from "../services/pumpfunSwap";
+import { executeRaydiumAmmV4Sell } from "../services/raydiumAmmV4Swap";
+import { executeRaydiumCpmmSell, executeRaydiumClmmSell } from "../services/raydiumCpmmClmmSwap";
+import type { ClosedPosition } from "../types";
 import {
   executeJupiterBuy,
   executeJupiterSell,
@@ -293,15 +298,58 @@ export async function handleSwap(request: IncomingMessage, response: ServerRespo
       status: "selling",
       ...(exitPriceUsd > 0 ? { currentPriceUsd: exitPriceUsd } : {})
     });
+    // Route manual sell through native connector when the position has a stored monitor_type.
+    // Falls back to Jupiter for non-native positions or when pool data wasn't captured at buy.
+    const tokenDecimals = position.poolBaseDecimals ?? 0;
+    const useNativePumpSwap =
+      position.monitorType === "pumpswap" && Boolean(position.poolAddress);
+    const useNativePumpFun = position.monitorType === "pumpfun";
+    const useNativeRaydium =
+      position.monitorType === "raydium_amm_v4" && Boolean(position.poolAddress);
+    const useNativeRaydiumCpmm =
+      position.monitorType === "raydium_cpmm" && Boolean(position.poolAddress);
+    const useNativeRaydiumClmm =
+      position.monitorType === "raydium_clmm" && Boolean(position.poolAddress);
+    const executionRoute = useNativePumpSwap
+      ? "PumpSwap"
+      : useNativePumpFun
+        ? "Pump.fun"
+        : useNativeRaydium
+          ? "Raydium"
+          : useNativeRaydiumCpmm
+            ? "Raydium-CPMM"
+            : useNativeRaydiumClmm
+              ? "Raydium-CLMM"
+              : "Jupiter";
     let result;
     try {
-      result = await executeJupiterSell(position.tokenMint, position.tokenAmount);
+      result = useNativePumpSwap
+        ? await executePumpSwapSell(position.tokenMint, position.tokenAmount, position.poolAddress as string)
+        : useNativePumpFun
+          ? await executePumpFunSell(position.tokenMint, position.tokenAmount)
+          : useNativeRaydium
+            ? await executeRaydiumAmmV4Sell(position.tokenMint, position.tokenAmount, position.poolAddress as string)
+            : useNativeRaydiumCpmm
+              ? await executeRaydiumCpmmSell(
+                  position.tokenMint,
+                  position.tokenAmount,
+                  tokenDecimals,
+                  position.poolAddress as string
+                )
+              : useNativeRaydiumClmm
+                ? await executeRaydiumClmmSell(
+                    position.tokenMint,
+                    position.tokenAmount,
+                    tokenDecimals,
+                    position.poolAddress as string
+                  )
+                : await executeJupiterSell(position.tokenMint, position.tokenAmount);
     } catch (error) {
       await patchActivePosition(position.id, {
         status: "open",
         ...(exitPriceUsd > 0 ? { currentPriceUsd: exitPriceUsd } : {})
       });
-      sendError(response, 502, "JUPITER_SELL_FAILED", getErrorMessage(error));
+      sendError(response, 502, "MANUAL_SELL_FAILED", getErrorMessage(error));
       return;
     }
     // Prefer actual SOL in/out — includes all fees, not subject to stale price data.
@@ -329,7 +377,7 @@ export async function handleSwap(request: IncomingMessage, response: ServerRespo
         tokenAmount: position.tokenAmount,
         openedAt: position.openedAt,
         profitTier: position.profitTier,
-        exitPlatform: "Jupiter",
+        exitPlatform: executionRoute as ClosedPosition["exitPlatform"],
         closedAt: new Date().toISOString(),
         closeReason: "manual",
         sellTx: result.signature,
@@ -343,7 +391,7 @@ export async function handleSwap(request: IncomingMessage, response: ServerRespo
     );
     createBotLog({
       event: "MANUAL_SELL_EXECUTED",
-      message: `Manual sold ${position.tokenMint} through Jupiter`,
+      message: `Manual sold ${position.tokenMint} through ${executionRoute}`,
       wallet: position.sourceTrader,
       trader: position.sourceTrader,
       tokenMint: position.tokenMint,
@@ -352,7 +400,8 @@ export async function handleSwap(request: IncomingMessage, response: ServerRespo
       metadata: {
         exitPriceUsd: exitPriceUsd || position.currentPriceUsd,
         outputSol: result.outputSol,
-        executionRoute: "Jupiter",
+        executionRoute,
+        buyPlatform: position.buyPlatform,
         quotedOutSol: result.quotedOutSol,
         networkFeeSol: result.networkFeeSol,
         priorityFeeSol: result.priorityFeeSol,

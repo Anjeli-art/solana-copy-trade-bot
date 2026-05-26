@@ -59,7 +59,9 @@ export function useMirrorState(setApiError: (error: string) => void) {
     }
 
     if (status.enabled) {
-      pollRef.current = setInterval(refresh, 8000);
+      // 2s poll picks up WS-driven price updates fast (backend updates DB on every
+      // pool change ~200ms; UI was previously stuck at 8s). 2s keeps API load light.
+      pollRef.current = setInterval(refresh, 2000);
     }
 
     return () => {

@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import { Connection, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { readState } from "../state/store";
 import { withRpcLimit } from "../utils/rpcLimiter";
+import { createHeliusWebSocketManager, type HeliusWebSocketManager } from "../utils/heliusWebSocket";
 
 dotenv.config({
   path: path.resolve(__dirname, "../../helpers/.env")
@@ -211,6 +212,50 @@ async function processTraderSignatures(
   return signatures[signatures.length - 1]?.signature || lastSeenSignature;
 }
 
+async function processSingleMonitorSignature(
+  connection: Connection,
+  trader: string,
+  signature: string,
+  seenSignatures: Set<string>
+) {
+  if (seenSignatures.has(signature)) {
+    return;
+  }
+  seenSignatures.add(signature);
+
+  let transaction;
+  try {
+    transaction = await withRpcLimit(() =>
+      connection.getParsedTransaction(signature, {
+        commitment: "confirmed",
+        maxSupportedTransactionVersion: 0
+      })
+    );
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "TRADER_MONITOR_TX_ERROR",
+        trader,
+        signature,
+        message: error instanceof Error ? error.message : "Unknown tx fetch error"
+      })
+    );
+    return;
+  }
+
+  if (!transaction) return;
+
+  const buys = detectTraderBuys(transaction, trader, signature);
+  for (const buy of buys) {
+    console.log(
+      JSON.stringify({
+        event: "TRADER_BUY_DETECTED",
+        ...buy
+      })
+    );
+  }
+}
+
 export async function startFreeRpcTraderMonitor() {
   const endpoint = getRpcEndpoint();
   if (!endpoint) {
@@ -223,13 +268,54 @@ export async function startFreeRpcTraderMonitor() {
   const lastSeenByTrader = new Map<string, string | undefined>();
   const seenSignaturesByTrader = new Map<string, Set<string>>();
 
-  console.log(`Free RPC trader monitor started. Poll interval: ${pollIntervalMs}ms`);
+  // WebSocket pipeline. Polling stays as fallback.
+  const wsManager: HeliusWebSocketManager | null = createHeliusWebSocketManager();
+  if (wsManager) {
+    wsManager.on("connect", () => {
+      console.log(JSON.stringify({ event: "MONITOR_WS_CONNECTED" }));
+    });
+    wsManager.on("disconnect", (reason) => {
+      console.log(JSON.stringify({ event: "MONITOR_WS_DISCONNECTED", reason }));
+    });
+    wsManager.on("error", (error) => {
+      console.error(JSON.stringify({ event: "MONITOR_WS_ERROR", message: error.message }));
+    });
+    wsManager.on("notification", async ({ trader, signature, err }) => {
+      if (err) return;
+      try {
+        const seenSignatures = seenSignaturesByTrader.get(trader) || new Set<string>();
+        seenSignaturesByTrader.set(trader, seenSignatures);
+        await processSingleMonitorSignature(connection, trader, signature, seenSignatures);
+        lastSeenByTrader.set(trader, signature);
+      } catch (error) {
+        console.error(JSON.stringify({
+          event: "MONITOR_WS_HANDLER_ERROR",
+          trader,
+          signature,
+          message: error instanceof Error ? error.message : "Unknown handler error"
+        }));
+      }
+    });
+    wsManager.start();
+  }
+
+  console.log(`Free RPC trader monitor started. Poll interval: ${pollIntervalMs}ms (fallback). WS: ${wsManager ? "on" : "off"}`);
   console.log(`Historical signatures on startup: ${includeHistory ? "enabled" : "skipped"}`);
   console.log("gRPC monitor stays disabled for now and can replace this adapter later.");
 
   while (true) {
     const state = await readState();
     const traders = state.trackedTraders.filter((trader) => trader.enabled);
+
+    // Keep WS subscriptions in sync with the current trader list.
+    if (wsManager) {
+      wsManager.syncSubscriptions(traders.map((t) => t.address)).catch((error) => {
+        console.error(JSON.stringify({
+          event: "MONITOR_WS_SYNC_ERROR",
+          message: error instanceof Error ? error.message : String(error)
+        }));
+      });
+    }
 
     // Poll all traders in parallel — last trader no longer waits for all previous ones
     await Promise.allSettled(

@@ -1,5 +1,7 @@
 import type { FormEvent } from "react";
 
+export type PlatformName = "Raydium" | "Orca" | "Meteora" | "Pump.fun" | "PumpSwap" | "Jupiter";
+
 export type Trader = {
   address: string;
   label?: string;
@@ -181,6 +183,10 @@ export type MirrorPosition = {
   mirrorTrader: string;
   sourceBuySignature?: string;
   buyTx?: string;
+  // Where the trader originally bought the token (and where we mirrored from).
+  buyPlatform?: PlatformName | null;
+  // Which native monitor pipeline is feeding live price for this position.
+  monitorType?: "pumpswap" | "pumpfun" | "raydium_amm_v4" | "raydium_cpmm" | "raydium_clmm" | null;
   entryPriceUsd: number;
   currentPriceUsd: number;
   tokenAmount: number;
@@ -200,6 +206,10 @@ export type MirrorClosedPosition = {
   sourceSellSignature?: string;
   buyTx?: string;
   sellTx?: string;
+  // Where the position was originally opened (e.g. "PumpSwap", "Pump.fun").
+  buyPlatform?: PlatformName | string | null;
+  // Which venue actually ran the sell ("PumpSwap", "Jupiter", etc.).
+  exitPlatform?: string | null;
   entryPriceUsd: number;
   exitPriceUsd: number;
   tokenAmount: number;

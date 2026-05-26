@@ -38,6 +38,23 @@ export type ActivePosition = {
   openedAt: string;
   status: "open" | "selling";
   profitTier: "low" | "high";
+  // Pool monitoring metadata for real-time WebSocket price feed.
+  // Populated only for PumpSwap positions (and future native-monitored platforms).
+  // When monitorType is null, price comes from Jupiter polling instead.
+  // For PumpSwap & Raydium AMM v4: poolAddress = pool/AMM id, poolBaseVault/poolQuoteVault = token accounts.
+  // For Pump.fun bonding curve: poolAddress = bonding curve PDA, vaults are null
+  //   (reserves live inside the bonding curve account itself).
+  poolAddress?: string;
+  poolBaseVault?: string;
+  poolQuoteVault?: string;
+  poolBaseDecimals?: number;
+  monitorType?:
+    | "pumpswap"
+    | "pumpfun"
+    | "raydium_amm_v4"
+    | "raydium_cpmm"
+    | "raydium_clmm"
+    | null;
 };
 
 export type CloseReason = "take-profit" | "manual" | "stop-loss" | "timeout" | "deleted";

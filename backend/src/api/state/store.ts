@@ -53,6 +53,11 @@ type DbActivePosition = {
   opened_at: string;
   status: string;
   profit_tier: string | null;
+  pool_address: string | null;
+  pool_base_vault: string | null;
+  pool_quote_vault: string | null;
+  pool_base_decimals: number | null;
+  monitor_type: string | null;
 };
 
 type DbClosedPosition = {
@@ -199,7 +204,23 @@ function toActivePosition(row: DbActivePosition): ActivePosition {
     tokenAmount: row.token_amount,
     openedAt: row.opened_at,
     status: row.status === "selling" ? "selling" : "open",
-    profitTier: toProfitTier(row.profit_tier)
+    profitTier: toProfitTier(row.profit_tier),
+    poolAddress: row.pool_address || undefined,
+    poolBaseVault: row.pool_base_vault || undefined,
+    poolQuoteVault: row.pool_quote_vault || undefined,
+    poolBaseDecimals: row.pool_base_decimals ?? undefined,
+    monitorType:
+      row.monitor_type === "pumpswap"
+        ? "pumpswap"
+        : row.monitor_type === "pumpfun"
+          ? "pumpfun"
+          : row.monitor_type === "raydium_amm_v4"
+            ? "raydium_amm_v4"
+            : row.monitor_type === "raydium_cpmm"
+              ? "raydium_cpmm"
+              : row.monitor_type === "raydium_clmm"
+                ? "raydium_clmm"
+                : null
   };
 }
 
@@ -629,9 +650,10 @@ function insertActivePosition(position: ActivePosition, savedAt: string) {
         id, token_symbol, token_mint, source_trader, source_signature, buy_platform, buy_tx, entry_price_usd,
         current_price_usd, current_price_updated_at, amount_usd, sol_spent, buy_network_fee_sol,
         buy_priority_fee_sol, buy_quoted_out_amount, buy_actual_sol_change, token_amount, opened_at, status, profit_tier,
+        pool_address, pool_base_vault, pool_quote_vault, pool_base_decimals, monitor_type,
         created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         token_symbol = excluded.token_symbol,
         token_mint = excluded.token_mint,
@@ -652,6 +674,11 @@ function insertActivePosition(position: ActivePosition, savedAt: string) {
         opened_at = excluded.opened_at,
         status = excluded.status,
         profit_tier = excluded.profit_tier,
+        pool_address = excluded.pool_address,
+        pool_base_vault = excluded.pool_base_vault,
+        pool_quote_vault = excluded.pool_quote_vault,
+        pool_base_decimals = excluded.pool_base_decimals,
+        monitor_type = excluded.monitor_type,
         updated_at = excluded.updated_at
     `
   ).run(
@@ -675,6 +702,11 @@ function insertActivePosition(position: ActivePosition, savedAt: string) {
     position.openedAt,
     position.status,
     position.profitTier,
+    position.poolAddress || null,
+    position.poolBaseVault || null,
+    position.poolQuoteVault || null,
+    position.poolBaseDecimals ?? null,
+    position.monitorType || null,
     savedAt,
     savedAt
   );

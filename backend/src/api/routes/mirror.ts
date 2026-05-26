@@ -3,6 +3,10 @@ import { db } from "../db/sqlite";
 import { sendError, sendJson } from "../http/response";
 import { readJsonBody } from "../http/request";
 import { executeJupiterSell } from "../services/jupiterSwap";
+import { executePumpSwapSell } from "../services/pumpswapSwap";
+import { executePumpFunSell } from "../services/pumpfunSwap";
+import { executeRaydiumAmmV4Sell } from "../services/raydiumAmmV4Swap";
+import { executeRaydiumCpmmSell, executeRaydiumClmmSell } from "../services/raydiumCpmmClmmSwap";
 import { createBotLog } from "../services/logs";
 import { getTokenMetadata } from "../services/tokenMetadata";
 import { refreshWalletBalance } from "../services/walletBalance";
@@ -28,6 +32,12 @@ type DbMirrorPosition = {
   status: string;
   created_at: string;
   updated_at: string;
+  buy_platform: string | null;
+  pool_address: string | null;
+  pool_base_vault: string | null;
+  pool_quote_vault: string | null;
+  pool_base_decimals: number | null;
+  monitor_type: string | null;
 };
 
 function getMirrorTraders() {
@@ -48,22 +58,7 @@ function getMirrorPositions() {
     .prepare(
       "SELECT * FROM mirror_positions WHERE status = 'open' ORDER BY opened_at DESC"
     )
-    .all() as Array<{
-      id: string;
-      token_mint: string;
-      token_symbol: string | null;
-      mirror_trader: string;
-      source_buy_signature: string | null;
-      buy_tx: string | null;
-      entry_price_usd: number;
-      current_price_usd: number;
-      token_amount: number;
-      sol_spent: number;
-      opened_at: string;
-      status: string;
-      created_at: string;
-      updated_at: string;
-    }>;
+    .all() as DbMirrorPosition[];
 }
 
 function getMirrorClosedPositions() {
@@ -86,6 +81,8 @@ function getMirrorClosedPositions() {
       sol_spent: number;
       sol_received: number | null;
       close_reason: string;
+      buy_platform: string | null;
+      exit_platform: string | null;
       opened_at: string;
       closed_at: string;
       created_at: string;
@@ -267,6 +264,8 @@ export async function handleMirror(
           mirrorTrader: pos.mirror_trader,
           sourceBuySignature: pos.source_buy_signature,
           buyTx: pos.buy_tx,
+          buyPlatform: pos.buy_platform || null,
+          monitorType: pos.monitor_type || null,
           entryPriceUsd: pos.entry_price_usd,
           currentPriceUsd: pos.current_price_usd,
           tokenAmount: pos.token_amount,
@@ -297,6 +296,8 @@ export async function handleMirror(
           sourceSellSignature: pos.source_sell_signature,
           buyTx: pos.buy_tx,
           sellTx: pos.sell_tx,
+          buyPlatform: pos.buy_platform || null,
+          exitPlatform: pos.exit_platform || null,
           entryPriceUsd: pos.entry_price_usd,
           exitPriceUsd: pos.exit_price_usd,
           tokenAmount: pos.token_amount,
@@ -330,7 +331,50 @@ export async function handleMirror(
     }
 
     try {
-      const result = await executeJupiterSell(pos.token_mint, pos.token_amount);
+      // Route through native connector when monitor_type was recorded at buy time.
+      // Falls back to Jupiter for non-native platforms.
+      const tokenDecimals = pos.pool_base_decimals ?? 0;
+      const useNativePumpSwap =
+        pos.monitor_type === "pumpswap" && Boolean(pos.pool_address);
+      const useNativePumpFun = pos.monitor_type === "pumpfun";
+      const useNativeRaydium =
+        pos.monitor_type === "raydium_amm_v4" && Boolean(pos.pool_address);
+      const useNativeRaydiumCpmm =
+        pos.monitor_type === "raydium_cpmm" && Boolean(pos.pool_address);
+      const useNativeRaydiumClmm =
+        pos.monitor_type === "raydium_clmm" && Boolean(pos.pool_address);
+      const result = useNativePumpSwap
+        ? await executePumpSwapSell(pos.token_mint, pos.token_amount, pos.pool_address as string)
+        : useNativePumpFun
+          ? await executePumpFunSell(pos.token_mint, pos.token_amount)
+          : useNativeRaydium
+            ? await executeRaydiumAmmV4Sell(pos.token_mint, pos.token_amount, pos.pool_address as string)
+            : useNativeRaydiumCpmm
+              ? await executeRaydiumCpmmSell(
+                  pos.token_mint,
+                  pos.token_amount,
+                  tokenDecimals,
+                  pos.pool_address as string
+                )
+              : useNativeRaydiumClmm
+                ? await executeRaydiumClmmSell(
+                    pos.token_mint,
+                    pos.token_amount,
+                    tokenDecimals,
+                    pos.pool_address as string
+                  )
+                : await executeJupiterSell(pos.token_mint, pos.token_amount);
+      const executionRoute = useNativePumpSwap
+        ? "PumpSwap"
+        : useNativePumpFun
+          ? "Pump.fun"
+          : useNativeRaydium
+            ? "Raydium"
+            : useNativeRaydiumCpmm
+              ? "Raydium-CPMM"
+              : useNativeRaydiumClmm
+                ? "Raydium-CLMM"
+                : "Jupiter";
       const state = await readState();
       const wallet = await refreshWalletBalance(state.wallet);
       const solReceived = result.actualSolChange !== undefined
@@ -346,8 +390,9 @@ export async function handleMirror(
           buy_tx, sell_tx,
           entry_price_usd, exit_price_usd,
           token_amount, sol_spent, sol_received,
-          close_reason, opened_at, closed_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?)
+          close_reason, buy_platform, exit_platform,
+          opened_at, closed_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?)
       `).run(
         pos.id,
         pos.token_mint,
@@ -362,6 +407,8 @@ export async function handleMirror(
         pos.token_amount,
         pos.sol_spent,
         solReceived,
+        pos.buy_platform || null,
+        executionRoute,
         pos.opened_at,
         now(),
         now()
@@ -370,11 +417,18 @@ export async function handleMirror(
 
       createBotLog({
         event: "MIRROR_SELL_MANUAL",
-        message: `Manual mirror sell executed for ${pos.token_mint}`,
+        message: `Manual mirror sell executed for ${pos.token_mint} through ${executionRoute}`,
         tokenMint: pos.token_mint,
         trader: pos.mirror_trader,
         signature: result.signature,
-        metadata: { positionId, solReceived, exitPriceUsd, tokenAmount: pos.token_amount }
+        metadata: {
+          positionId,
+          solReceived,
+          exitPriceUsd,
+          tokenAmount: pos.token_amount,
+          executionRoute,
+          buyPlatform: pos.buy_platform
+        }
       });
 
       sendJson(response, 200, {
