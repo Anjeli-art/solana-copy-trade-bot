@@ -12,7 +12,19 @@ import {
   saveSettings,
   updatePositionProfitTier
 } from "../api/client";
+import { realtime } from "../api/wsClient";
 import type { BlacklistedToken, BotWallet, ClosedPosition, ManualRepeatToken, Position, Trader } from "../types";
+
+// Coerce snake_case DB rows pushed via WS into the frontend wallet shape.
+function mapWalletRow(row: any): BotWallet {
+  return {
+    address: row.address ?? "",
+    solBalance: Number(row.sol_balance ?? row.solBalance ?? 0),
+    solPriceUsd: Number(row.sol_price_usd ?? row.solPriceUsd ?? 0),
+    realizedPnlTodayUsd: Number(row.realized_pnl_today_usd ?? row.realizedPnlTodayUsd ?? 0),
+    lastUpdated: row.last_updated ?? row.lastUpdated ?? new Date().toISOString()
+  };
+}
 
 type SetApiError = (message: string) => void;
 
@@ -76,6 +88,47 @@ export function useBotState(setApiError: SetApiError, refreshAnalytics: () => Pr
 
   useEffect(() => {
     refreshState();
+  }, [refreshState]);
+
+  // Realtime WS — wallet + active positions update instantly without polling.
+  // Snapshot on connect plus targeted events on each state mutation.
+  useEffect(() => {
+    const offWallet = realtime.on("wallet:updated", ({ payload }) => {
+      if (payload.wallet) setWallet(mapWalletRow(payload.wallet));
+    });
+    // For position open/close/update — refetch full active list from REST.
+    // The REST path already returns properly-typed rows with metadata enrichment.
+    // Targeted update of just price would lose metadata; full refetch is cheap.
+    const offUpdated = realtime.on("active_position:updated", ({ payload }) => {
+      const row = payload.position as any;
+      if (!row?.id) return;
+      // Hot path: update only currentPrice + timestamp so PnL recomputes instantly.
+      setPositions((prev) => {
+        const idx = prev.findIndex((p) => p.id === row.id);
+        if (idx === -1) return prev;
+        const next = prev.slice();
+        next[idx] = {
+          ...prev[idx],
+          currentPrice: Number(row.current_price_usd ?? prev[idx].currentPrice),
+          priceUpdatedAt: row.current_price_updated_at ?? prev[idx].priceUpdatedAt
+        };
+        return next;
+      });
+    });
+    const offOpened = realtime.on("active_position:opened", () => {
+      // New position — refetch full state so we have proper metadata.
+      refreshState();
+    });
+    const offClosed = realtime.on("active_position:closed", () => {
+      // Position closed — move it from active to closed via a refetch.
+      refreshState();
+    });
+    return () => {
+      offWallet();
+      offUpdated();
+      offOpened();
+      offClosed();
+    };
   }, [refreshState]);
 
   const saveTradingSettings = useCallback(async () => {

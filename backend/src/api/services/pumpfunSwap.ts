@@ -31,6 +31,10 @@ import { getJupiterSwapExecutionDetails } from "./jupiterSwap";
 import { createBotLog } from "./logs";
 import { getActualTokenBalance } from "./tokenBalance";
 import { closeTokenAccountIfEmpty } from "./ataRentRecovery";
+import { getMintInfo } from "./caches/mintInfoCache";
+import { getCachedBlockhash, forceBlockhashRefresh } from "./caches/blockhashCache";
+import { getPumpFunGlobal, getPumpFunFeeConfig, invalidatePumpFunConfig } from "./caches/pumpFunConfigCache";
+import { sendBuyViaJito } from "./jitoSender";
 
 dotenv.config({
   path: path.resolve(__dirname, "../../helpers/.env")
@@ -91,26 +95,27 @@ function buildComputeBudgetInstructions(): TransactionInstruction[] {
 }
 
 /**
- * Pump.fun started minting Token-2022 mints (e.g. *pump suffix tokens that route via
- * TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb instead of legacy SPL Token).
- * The bonding curve SDK requires the *correct* token program — passing the legacy
- * program for a 2022 mint blows up with custom error 0x1788 (incorrect program id)
- * because the ATA derivation and the curve's vault PDAs disagree.
- *
- * Read the mint account owner once per call (cheap, <50ms) and route accordingly.
+ * Pump.fun mints can be Token-2022 (TokenzQdBNbLqP…) — we need the EXACT token
+ * program to derive the ATA and the curve vaults correctly. mintInfoCache
+ * memoises this lookup since mint owner is immutable for the mint's lifetime.
  */
 async function detectTokenProgram(mint: PublicKey): Promise<PublicKey> {
-  const connection = getRaydiumConnection();
-  const mintInfo = await connection.getAccountInfo(mint, "confirmed");
-  if (!mintInfo) {
-    // Mint should always exist; if it doesn't, the buy/sell will fail anyway.
-    // Default to legacy SPL to preserve old behavior.
+  try {
+    const { tokenProgram } = await getMintInfo(getRaydiumConnection(), mint);
+    return tokenProgram;
+  } catch {
+    // Mint should always exist; if cache lookup fails entirely fall back to
+    // legacy SPL to preserve old behavior rather than aborting.
     return TOKEN_PROGRAM_ID;
   }
-  if (mintInfo.owner.equals(TOKEN_2022_PROGRAM_ID)) {
-    return TOKEN_2022_PROGRAM_ID;
-  }
-  return TOKEN_PROGRAM_ID;
+}
+
+// Marker the RPC returns when our pre-cached blockhash has expired between
+// build and send. We catch this specific case and retry once with a fresh hash.
+function isBlockhashNotFoundError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const message = err.message.toLowerCase();
+  return message.includes("blockhash not found") || message.includes("blockhashnotfound");
 }
 
 async function sendAndConfirm(
@@ -118,25 +123,76 @@ async function sendAndConfirm(
   options: {
     shouldSend?: () => boolean | Promise<boolean>;
     onSignature?: (signature: string) => void | Promise<void>;
+    /**
+     * When true, try sending via Jito Block Engine first (with tiny tip) so the
+     * tx lands in the next leader slot instead of waiting for the regular RPC
+     * propagation. Use ONLY on buy paths — sells/ATA closes don't need it.
+     * On Jito failure we fall through to standard sendRawTransaction.
+     */
+     useJito?: boolean;
+     /** Mint passed through to Jito logs for traceability. */
+     tokenMint?: string;
   }
 ): Promise<{ signature: string; signatureCount: number }> {
   const connection = getRaydiumConnection();
   const wallet = getTradingWallet();
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
-  const transaction = new Transaction({ blockhash, lastValidBlockHeight, feePayer: wallet.publicKey });
-  for (const ix of instructions) {
-    transaction.add(ix);
-  }
-  transaction.sign(wallet);
+
+  // Cached blockhash refreshes in the background every ~8s, so this is cheap.
+  let { blockhash, lastValidBlockHeight } = await getCachedBlockhash(connection);
+  const buildTx = (hash: string, height: number) => {
+    const tx = new Transaction({ blockhash: hash, lastValidBlockHeight: height, feePayer: wallet.publicKey });
+    for (const ix of instructions) tx.add(ix);
+    tx.sign(wallet);
+    return tx;
+  };
+  let transaction = buildTx(blockhash, lastValidBlockHeight);
 
   if (options.shouldSend && !(await options.shouldSend())) {
     throw new Error("Swap aborted before send: trading was stopped");
   }
 
-  const signature = await connection.sendRawTransaction(transaction.serialize(), {
-    skipPreflight: false,
-    maxRetries: 3
-  });
+  let signature: string | null = null;
+
+  // Jito-first path (buy only). Bundle = [tipTx, swapTx]; tip 50-200K lamports.
+  // Lands in the SAME leader slot as the triggering trader tx → race-winner.
+  if (options.useJito) {
+    try {
+      const jitoResult = await sendBuyViaJito(connection, wallet, transaction, options.tokenMint);
+      signature = jitoResult.signature;
+    } catch (jitoErr) {
+      const msg = jitoErr instanceof Error ? jitoErr.message : String(jitoErr);
+      createBotLog({
+        level: "warn",
+        event: "BUY_JITO_FALLBACK",
+        message: `Jito bundle failed, falling back to RPC send: ${msg.slice(0, 120)}`,
+        tokenMint: options.tokenMint,
+        metadata: { reason: msg }
+      });
+      // fall through to standard send
+    }
+  }
+
+  if (!signature) {
+    try {
+      signature = await connection.sendRawTransaction(transaction.serialize(), {
+        skipPreflight: false,
+        maxRetries: 3
+      });
+    } catch (err) {
+      // Single retry on stale blockhash — force a fresh hash and rebuild the tx.
+      // Worth the extra ~100ms round-trip vs losing the snipe.
+      if (!isBlockhashNotFoundError(err)) throw err;
+      const fresh = await forceBlockhashRefresh(connection);
+      blockhash = fresh.blockhash;
+      lastValidBlockHeight = fresh.lastValidBlockHeight;
+      transaction = buildTx(blockhash, lastValidBlockHeight);
+      signature = await connection.sendRawTransaction(transaction.serialize(), {
+        skipPreflight: false,
+        maxRetries: 3
+      });
+    }
+  }
+
   await options.onSignature?.(signature);
   await connection.confirmTransaction(
     { signature, blockhash, lastValidBlockHeight },
@@ -154,6 +210,12 @@ export async function executePumpFunBuy(
     onSignature?: (signature: string) => void | Promise<void>;
   } = {}
 ): Promise<PumpFunSwapResult> {
+  // Timing instrumentation — see BUY_TIMING log below. Lets us measure where
+  // the snipe pipeline spends time and verify cache benefits in production.
+  const t0 = Date.now();
+  let tMetadata = t0;
+  let tBuild = t0;
+  let tSend = t0;
   try {
     const connection = getRaydiumConnection();
     const wallet = getTradingWallet();
@@ -163,11 +225,13 @@ export async function executePumpFunBuy(
     const mint = new PublicKey(tokenMint);
     const tokenProgram = await detectTokenProgram(mint);
 
+    // global + feeConfig are cached (5min TTL) — only fetchBuyState hits RPC.
     const [global, feeConfig, buyState] = await Promise.all([
-      onlineSdk.fetchGlobal(),
-      onlineSdk.fetchFeeConfig(),
+      getPumpFunGlobal(onlineSdk),
+      getPumpFunFeeConfig(onlineSdk),
       onlineSdk.fetchBuyState(mint, wallet.publicKey, tokenProgram)
     ]);
+    tMetadata = Date.now();
 
     if (buyState.bondingCurve.complete) {
       throw new Error("Pump.fun bonding curve has graduated to PumpSwap; native buy not available");
@@ -197,14 +261,40 @@ export async function executePumpFunBuy(
       slippage: getSlippagePct(),
       tokenProgram
     });
+    tBuild = Date.now();
 
     const allIxs = [...buildComputeBudgetInstructions(), ...buyIxs];
-    const { signature, signatureCount } = await sendAndConfirm(allIxs, options);
+    // Jito disabled per user request (2026-05-27). Keep flags ready for fast
+    // re-enable — uncomment the two lines below to route this buy through the
+    // bundle path again. See `services/jitoSender.ts` for implementation.
+    const { signature, signatureCount } = await sendAndConfirm(allIxs, {
+      ...options
+      // useJito: true,
+      // tokenMint
+    });
+    tSend = Date.now();
 
     const execDetails = await getJupiterSwapExecutionDetails({
       signature,
       tokenMint,
-      signatureCount
+      signatureCount,
+      side: "buy"
+    });
+    const tDone = Date.now();
+
+    createBotLog({
+      event: "BUY_TIMING",
+      message: `Pump.fun buy ${tokenMint.slice(0, 8)}… total=${tDone - t0}ms`,
+      tokenMint,
+      signature,
+      metadata: {
+        platform: "Pump.fun",
+        metadataMs: tMetadata - t0,
+        buildMs: tBuild - tMetadata,
+        sendConfirmMs: tSend - tBuild,
+        execDetailsMs: tDone - tSend,
+        totalMs: tDone - t0
+      }
     });
 
     return {
@@ -218,6 +308,11 @@ export async function executePumpFunBuy(
       actualSolChange: execDetails.actualSolChange
     };
   } catch (error) {
+    // If SDK rejected because of stale cached global/feeConfig, drop the cache
+    // so the next attempt fetches fresh. We don't auto-retry here (caller has
+    // its own retry/fallback policy) but we make sure the cache doesn't keep
+    // serving stale data after a failure.
+    invalidatePumpFunConfig();
     createBotLog({
       level: "error",
       event: "PUMPFUN_SWAP_FAILED",
@@ -250,8 +345,8 @@ export async function executePumpFunSell(
     const rawTokenAmount = actual.balanceRaw;
 
     const [global, feeConfig, sellState] = await Promise.all([
-      onlineSdk.fetchGlobal(),
-      onlineSdk.fetchFeeConfig(),
+      getPumpFunGlobal(onlineSdk),
+      getPumpFunFeeConfig(onlineSdk),
       onlineSdk.fetchSellState(mint, wallet.publicKey, tokenProgram)
     ]);
 
@@ -259,13 +354,26 @@ export async function executePumpFunSell(
       throw new Error("Pump.fun bonding curve has graduated; native sell not available — use Jupiter or PumpSwap");
     }
 
-    // SDK helper requires `mintSupply` as BN (vs null for buy).
-    // We can fetch the mint's actual supply once; but the helper accepts the bonding curve's
-    // tokenTotalSupply as a safe upper-bound proxy for sell math.
+    // LaunchBlitz / "mayhem" curves use the *actual* mint supply in their fee math —
+    // passing the curve's tokenTotalSupply caused Anchor error 6024 (overflow) on
+    // pump/src/lib.rs:844 for these tokens. The SDK gates this on bondingCurve.isMayhemMode.
+    const isMayhem = Boolean((sellState.bondingCurve as unknown as { isMayhemMode?: boolean }).isMayhemMode);
+    const isCashback = Boolean((sellState.bondingCurve as unknown as { isCashbackCoin?: boolean }).isCashbackCoin);
+    let mintSupplyForCalc = sellState.bondingCurve.tokenTotalSupply;
+    if (isMayhem) {
+      try {
+        const supplyResp = await connection.getTokenSupply(mint, "confirmed");
+        mintSupplyForCalc = new BN(supplyResp.value.amount);
+      } catch {
+        // Fall through to tokenTotalSupply if the lookup fails; the sell will then
+        // fail again with the same overflow but at least we tried.
+      }
+    }
+
     const expectedSolOut = getSellSolAmountFromTokenAmount({
       global,
       feeConfig,
-      mintSupply: sellState.bondingCurve.tokenTotalSupply,
+      mintSupply: mintSupplyForCalc,
       bondingCurve: sellState.bondingCurve,
       amount: rawTokenAmount
     });
@@ -280,7 +388,13 @@ export async function executePumpFunSell(
       solAmount: expectedSolOut,
       slippage: getSlippagePct(),
       tokenProgram,
-      mayhemMode: false
+      // Must match the curve's actual mode — passing false to a mayhem curve picks the
+      // wrong fee recipient PDAs and causes the program to overflow on math.
+      mayhemMode: isMayhem,
+      // Cashback coins require userVolumeAccumulator in remaining accounts.
+      // Without it, Token-2022 transfer succeeds and Pump.fun sell can fail with
+      // Anchor Overflow (0x1788) even though other wallets sell the same mint.
+      cashback: isCashback
     });
 
     const allIxs = [...buildComputeBudgetInstructions(), ...sellIxs];
@@ -289,13 +403,23 @@ export async function executePumpFunSell(
     const execDetails = await getJupiterSwapExecutionDetails({
       signature,
       tokenMint,
-      signatureCount
+      signatureCount,
+      side: "sell"
     });
 
     // Reclaim ~0.00204 SOL rent now that the ATA should be empty. Fire-and-forget —
-    // failure here must not abort the sell flow. Pumpfun previously skipped this;
-    // that's exactly why BgYHsi/69KWVW/BZDqzq leaked rent.
-    closeTokenAccountIfEmpty(connection, wallet, mint).catch(() => undefined);
+    // failure here must not abort the sell flow. closeTokenAccountIfEmpty has its
+    // own logging for the expected cases (non-empty, doesn't exist, etc); this
+    // outer catch only fires if the function itself rejects unexpectedly.
+    closeTokenAccountIfEmpty(connection, wallet, mint).catch((error) => {
+      createBotLog({
+        level: "warn",
+        event: "ATA_CLOSE_UNHANDLED",
+        message: error instanceof Error ? error.message : "Unhandled ATA close rejection",
+        tokenMint,
+        metadata: { route: "Pump.fun" }
+      });
+    });
 
     const outputSol = execDetails.actualSolChange !== undefined ? Math.abs(execDetails.actualSolChange) : 0;
     return {
@@ -311,6 +435,8 @@ export async function executePumpFunSell(
       actualSolChange: execDetails.actualSolChange
     };
   } catch (error) {
+    // Drop cached global/feeConfig in case stale config caused the failure.
+    invalidatePumpFunConfig();
     createBotLog({
       level: "error",
       event: "PUMPFUN_SWAP_FAILED",

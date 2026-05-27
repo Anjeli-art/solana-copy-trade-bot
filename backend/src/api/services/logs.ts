@@ -80,6 +80,13 @@ export function createBotLog(input: CreateLogInput) {
     log.createdAt
   );
 
+  // Push new log to UI clients so the live feed updates in real time. Dynamic
+  // import to avoid circular dependency on broadcaster, and to keep the call
+  // synchronous-free (we don't want logging to block on a network call).
+  void import("../realtime/workerBroadcast").then(({ publishRealtimeFromWorker }) =>
+    publishRealtimeFromWorker({ type: "bot_log:new", payload: { log } })
+  ).catch(() => undefined);
+
   return log;
 }
 

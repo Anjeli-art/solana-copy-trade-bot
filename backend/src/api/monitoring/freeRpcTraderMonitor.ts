@@ -4,6 +4,7 @@ import { Connection, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { readState } from "../state/store";
 import { withRpcLimit } from "../utils/rpcLimiter";
 import { createHeliusWebSocketManager, type HeliusWebSocketManager } from "../utils/heliusWebSocket";
+import { TRANSACTION_READ_COMMITMENT } from "../utils/commitment";
 
 dotenv.config({
   path: path.resolve(__dirname, "../../helpers/.env")
@@ -187,7 +188,7 @@ async function processTraderSignatures(
     newSignatures.map((s) =>
       withRpcLimit(() =>
         connection.getParsedTransaction(s.signature, {
-          commitment: "confirmed",
+          commitment: TRANSACTION_READ_COMMITMENT,
           maxSupportedTransactionVersion: 0
         })
       )
@@ -227,7 +228,7 @@ async function processSingleMonitorSignature(
   try {
     transaction = await withRpcLimit(() =>
       connection.getParsedTransaction(signature, {
-        commitment: "confirmed",
+        commitment: TRANSACTION_READ_COMMITMENT,
         maxSupportedTransactionVersion: 0
       })
     );

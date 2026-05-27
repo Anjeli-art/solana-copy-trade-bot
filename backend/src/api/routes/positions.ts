@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { readJsonBody } from "../http/request";
 import { sendError, sendJson } from "../http/response";
 import { getJupiterSellQuote } from "../services/jupiterSwap";
+import { getPositionSellQuoteSolFromChain } from "../services/positionPriceLookup";
 import {
   addActivePosition,
   closeActivePosition as closeActivePositionInStore,
@@ -128,16 +129,27 @@ export async function handleActivePositions(
       return;
     }
 
-    let quotedOutSol: number;
+    // Prefer native on-chain quote (zero rate-limit risk) — Jupiter only as
+    // last resort for positions without monitor_type (e.g. legacy / Meteora).
+    let quotedOutSol: number | null = null;
+    let priceSource: "native" | "jupiter" = "native";
     try {
-      ({ quotedOutSol } = await getJupiterSellQuote(position.tokenMint, position.tokenAmount));
+      quotedOutSol = await getPositionSellQuoteSolFromChain(position);
     } catch {
-      sendError(response, 502, "PRICE_UNAVAILABLE", "Unable to get current price from Jupiter");
-      return;
+      quotedOutSol = null;
+    }
+    if (quotedOutSol == null || quotedOutSol <= 0) {
+      priceSource = "jupiter";
+      try {
+        ({ quotedOutSol } = await getJupiterSellQuote(position.tokenMint, position.tokenAmount));
+      } catch {
+        sendError(response, 502, "PRICE_UNAVAILABLE", "Unable to get current price (both native and Jupiter failed)");
+        return;
+      }
     }
 
-    if (quotedOutSol <= 0) {
-      sendError(response, 422, "PRICE_UNAVAILABLE", "Jupiter returned zero price for token");
+    if (!quotedOutSol || quotedOutSol <= 0) {
+      sendError(response, 422, "PRICE_UNAVAILABLE", `${priceSource === "native" ? "Pool" : "Jupiter"} returned zero price for token`);
       return;
     }
 

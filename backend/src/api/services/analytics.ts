@@ -154,10 +154,16 @@ export function listTraderAnalytics(): TraderAnalytics[] {
             sol_spent,
             opened_at,
             CASE
-              WHEN entry_price_usd > 0 THEN amount_usd * (current_price_usd / entry_price_usd) - amount_usd
+              -- SOL-denominated unrealized PnL: re-value entry at the CURRENT sol
+              -- price so we don't pick up phantom % moves from SOL/USD drift.
+              -- current_value_usd = token_amount * current_price_usd  (current SOL price implicit)
+              -- entry_value_now   = sol_spent  * current_sol_price_usd
+              WHEN token_amount > 0 AND current_price_usd > 0
+                THEN token_amount * current_price_usd
+                     - sol_spent * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0)
               ELSE 0
             END AS pnl_usd,
-            COALESCE(buy_network_fee_sol, 0) AS fee_sol,
+            COALESCE(buy_network_fee_sol, 0) + COALESCE(buy_priority_fee_sol, 0) AS fee_sol,
             'active' AS position_state
           FROM active_positions
           WHERE source_trader NOT IN ('manual', 'manual-repeat')
@@ -169,11 +175,19 @@ export function listTraderAnalytics(): TraderAnalytics[] {
             opened_at,
             CASE
               WHEN sell_actual_sol_change IS NOT NULL AND buy_actual_sol_change IS NOT NULL
-                THEN (sell_actual_sol_change + buy_actual_sol_change) * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0)
-              WHEN entry_price_usd > 0 THEN amount_usd * (exit_price_usd / entry_price_usd) - amount_usd
+                -- ATA rent (~0.00204 SOL) is recovered into the wallet when the
+                -- token account is closed after sell. Real cash inflow that
+                -- previously slipped past PnL → users saw ~$0.17 less profit per
+                -- trade than gmgn-style explorers showed.
+                THEN (sell_actual_sol_change + buy_actual_sol_change + COALESCE(ata_rent_recovered, 0))
+                     * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0)
+              WHEN entry_price_usd > 0
+                THEN amount_usd * (exit_price_usd / entry_price_usd) - amount_usd
+                     + COALESCE(ata_rent_recovered, 0) * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0)
               ELSE 0
             END AS pnl_usd,
-            COALESCE(buy_network_fee_sol, 0) + COALESCE(sell_network_fee_sol, 0) AS fee_sol,
+            COALESCE(buy_network_fee_sol, 0) + COALESCE(buy_priority_fee_sol, 0)
+              + COALESCE(sell_network_fee_sol, 0) + COALESCE(sell_priority_fee_sol, 0) AS fee_sol,
             'closed' AS position_state
           FROM closed_positions
           WHERE source_trader NOT IN ('manual', 'manual-repeat')
@@ -251,10 +265,13 @@ export function listManualTokenAnalytics(): ManualTokenAnalytics[] {
             sol_spent,
             opened_at,
             CASE
-              WHEN entry_price_usd > 0 THEN amount_usd * (current_price_usd / entry_price_usd) - amount_usd
+              -- See listTraderAnalytics for SOL-drift rationale.
+              WHEN token_amount > 0 AND current_price_usd > 0
+                THEN token_amount * current_price_usd
+                     - sol_spent * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0)
               ELSE 0
             END AS pnl_usd,
-            COALESCE(buy_network_fee_sol, 0) AS fee_sol,
+            COALESCE(buy_network_fee_sol, 0) + COALESCE(buy_priority_fee_sol, 0) AS fee_sol,
             'active' AS position_state
           FROM active_positions
           WHERE source_trader IN ('manual', 'manual-repeat')
@@ -267,11 +284,16 @@ export function listManualTokenAnalytics(): ManualTokenAnalytics[] {
             opened_at,
             CASE
               WHEN sell_actual_sol_change IS NOT NULL AND buy_actual_sol_change IS NOT NULL
-                THEN (sell_actual_sol_change + buy_actual_sol_change) * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0)
-              WHEN entry_price_usd > 0 THEN amount_usd * (exit_price_usd / entry_price_usd) - amount_usd
+                -- See listTraderAnalytics for the rent-recovery rationale.
+                THEN (sell_actual_sol_change + buy_actual_sol_change + COALESCE(ata_rent_recovered, 0))
+                     * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0)
+              WHEN entry_price_usd > 0
+                THEN amount_usd * (exit_price_usd / entry_price_usd) - amount_usd
+                     + COALESCE(ata_rent_recovered, 0) * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0)
               ELSE 0
             END AS pnl_usd,
-            COALESCE(buy_network_fee_sol, 0) + COALESCE(sell_network_fee_sol, 0) AS fee_sol,
+            COALESCE(buy_network_fee_sol, 0) + COALESCE(buy_priority_fee_sol, 0)
+              + COALESCE(sell_network_fee_sol, 0) + COALESCE(sell_priority_fee_sol, 0) AS fee_sol,
             'closed' AS position_state
           FROM closed_positions
           WHERE source_trader IN ('manual', 'manual-repeat')
@@ -327,6 +349,9 @@ export type MirrorTraderAnalytics = {
   totalSolSpent: number;
   totalSolReceived: number;
   realizedPnlSol: number;
+  /** Mark-to-market PnL of currently-open mirror positions, in SOL. */
+  unrealizedPnlSol: number;
+  totalPnlSol: number;
   winCount: number;
   lossCount: number;
   winRate: number;
@@ -343,6 +368,7 @@ type MirrorTraderAnalyticsRow = {
   total_sol_spent: number;
   total_sol_received: number;
   realized_pnl_sol: number;
+  unrealized_pnl_sol: number;
   win_count: number;
   loss_count: number;
   first_trade_at: string;
@@ -362,16 +388,27 @@ export function listMirrorTraderAnalytics(): MirrorTraderAnalytics[] {
           COALESCE(SUM(trades.sol_spent), 0) AS total_sol_spent,
           COALESCE(SUM(CASE WHEN trades.status = 'closed' THEN trades.sol_received ELSE 0 END), 0) AS total_sol_received,
           COALESCE(SUM(CASE WHEN trades.status = 'closed' THEN trades.pnl_sol ELSE 0 END), 0) AS realized_pnl_sol,
+          COALESCE(SUM(CASE WHEN trades.status = 'active' THEN trades.pnl_sol ELSE 0 END), 0) AS unrealized_pnl_sol,
           SUM(CASE WHEN trades.status = 'closed' AND trades.pnl_sol > 0 THEN 1 ELSE 0 END) AS win_count,
           SUM(CASE WHEN trades.status = 'closed' AND trades.pnl_sol <= 0 THEN 1 ELSE 0 END) AS loss_count,
           MIN(trades.opened_at) AS first_trade_at,
           MAX(trades.opened_at) AS last_trade_at
         FROM (
+          -- Open mirror positions: mark-to-market unrealized PnL in SOL.
+          -- We don't store live current_quoted_sol; derive from current_price_usd
+          -- and the cached sol_price_usd (both updated together every ~5s).
           SELECT
             mirror_trader,
             sol_spent,
             0 AS sol_received,
-            0 AS pnl_sol,
+            CASE
+              WHEN token_amount > 0 AND current_price_usd > 0
+                   AND COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0) > 0
+                THEN (token_amount * current_price_usd
+                       / (SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'))
+                     - sol_spent
+              ELSE 0
+            END AS pnl_sol,
             opened_at,
             'active' AS status
           FROM mirror_positions
@@ -381,7 +418,10 @@ export function listMirrorTraderAnalytics(): MirrorTraderAnalytics[] {
             mirror_trader,
             sol_spent,
             COALESCE(sol_received, 0) AS sol_received,
-            COALESCE(sol_received, 0) - sol_spent AS pnl_sol,
+            -- Include ata_rent_recovered: ~0.00204 SOL flows back to wallet when
+            -- ATA closes after sell. Was missing → mirror PnL undercounted by
+            -- ~0.00204 SOL per trade (e.g. 30 trades = 0.061 SOL ≈ $5 ghost loss).
+            COALESCE(sol_received, 0) + COALESCE(ata_rent_recovered, 0) - sol_spent AS pnl_sol,
             opened_at,
             'closed' AS status
           FROM mirror_closed_positions
@@ -396,6 +436,8 @@ export function listMirrorTraderAnalytics(): MirrorTraderAnalytics[] {
   return rows.map((row) => {
     const closedTradeCount = Number(row.closed_trade_count || 0);
     const winCount = Number(row.win_count || 0);
+    const realizedPnlSol = Number(row.realized_pnl_sol || 0);
+    const unrealizedPnlSol = Number(row.unrealized_pnl_sol || 0);
 
     return {
       trader: row.trader,
@@ -405,7 +447,9 @@ export function listMirrorTraderAnalytics(): MirrorTraderAnalytics[] {
       closedTradeCount,
       totalSolSpent: Number(row.total_sol_spent || 0),
       totalSolReceived: Number(row.total_sol_received || 0),
-      realizedPnlSol: Number(row.realized_pnl_sol || 0),
+      realizedPnlSol,
+      unrealizedPnlSol,
+      totalPnlSol: realizedPnlSol + unrealizedPnlSol,
       winCount,
       lossCount: Number(row.loss_count || 0),
       winRate: closedTradeCount > 0 ? (winCount / closedTradeCount) * 100 : 0,
@@ -419,25 +463,49 @@ export function listSalesAnalytics(bucket: "day" | "hour" = "day"): SalesAnalyti
   const bucketExpression =
     bucket === "hour" ? "strftime('%Y-%m-%dT%H:00', closed_at)" : "strftime('%Y-%m-%d', closed_at)";
 
+  // UNION ALL across copy + mirror sales so the chart reflects FULL activity.
+  // Before this fix, mirror sales (the trader-mirroring path) were invisible
+  // on /api/analytics/sales because the query only hit closed_positions.
   const rows = db
     .prepare(
       `
         SELECT
           ${bucketExpression} AS bucket_start,
           COUNT(*) AS sales_count,
-          COALESCE(SUM(COALESCE(sell_quoted_out_sol, sell_actual_sol_change, 0)), 0) AS gross_sol,
-          COALESCE(SUM(COALESCE(sell_network_fee_sol, 0)), 0) AS fee_sol,
-          COALESCE(SUM(COALESCE(sell_actual_sol_change, sell_quoted_out_sol, 0)), 0) AS net_sol,
-          COALESCE(SUM(
+          COALESCE(SUM(gross_sol), 0) AS gross_sol,
+          COALESCE(SUM(fee_sol), 0) AS fee_sol,
+          COALESCE(SUM(net_sol), 0) AS net_sol,
+          COALESCE(SUM(pnl_usd), 0) AS pnl_usd
+        FROM (
+          -- Copy / manual trades
+          SELECT
+            closed_at,
+            COALESCE(sell_quoted_out_sol, sell_actual_sol_change, 0) AS gross_sol,
+            COALESCE(sell_network_fee_sol, 0) + COALESCE(sell_priority_fee_sol, 0) AS fee_sol,
+            COALESCE(sell_actual_sol_change, sell_quoted_out_sol, 0) AS net_sol,
             CASE
               WHEN sell_actual_sol_change IS NOT NULL AND buy_actual_sol_change IS NOT NULL
-                THEN (sell_actual_sol_change + buy_actual_sol_change) * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0)
-              WHEN entry_price_usd > 0 THEN amount_usd * (exit_price_usd / entry_price_usd) - amount_usd
+                THEN (sell_actual_sol_change + buy_actual_sol_change + COALESCE(ata_rent_recovered, 0))
+                     * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0)
+              WHEN entry_price_usd > 0
+                THEN amount_usd * (exit_price_usd / entry_price_usd) - amount_usd
+                     + COALESCE(ata_rent_recovered, 0) * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0)
               ELSE 0
-            END
-          ), 0) AS pnl_usd
-        FROM closed_positions
-        WHERE closed_at IS NOT NULL
+            END AS pnl_usd
+          FROM closed_positions
+          WHERE closed_at IS NOT NULL
+          UNION ALL
+          -- Mirror trades
+          SELECT
+            closed_at,
+            COALESCE(sol_received, 0) AS gross_sol,
+            0 AS fee_sol,                            -- mirror_closed_positions doesn't track fees per side
+            COALESCE(sol_received, 0) AS net_sol,
+            (COALESCE(sol_received, 0) + COALESCE(ata_rent_recovered, 0) - sol_spent)
+              * COALESCE((SELECT sol_price_usd FROM bot_wallet WHERE id = 'default'), 0) AS pnl_usd
+          FROM mirror_closed_positions
+          WHERE closed_at IS NOT NULL
+        )
         GROUP BY bucket_start
         ORDER BY bucket_start ASC
       `

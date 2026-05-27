@@ -194,17 +194,28 @@ export function isJupiterRateLimitError(error: unknown) {
   return error instanceof JupiterRequestError && error.status === 429;
 }
 
-async function requestJson<T>(url: string, init?: RequestInit, retries = getJupiterRequestRetries()): Promise<T> {
+async function requestJson<T>(
+  url: string,
+  init?: RequestInit,
+  retries = getJupiterRequestRetries(),
+  attempt = 0
+): Promise<T> {
   await waitForJupiterSlot();
   const response = await fetch(url, init);
   const payload = await response.json().catch(() => ({})) as JupiterErrorPayload;
 
   if (!response.ok) {
     if (response.status === 429 && retries > 0) {
-      const retryMs = getJupiterRateLimitRetryMs(response);
+      // Exponential backoff with jitter: 1s, 2s, 4s, 8s, 16s + 0-500ms random.
+      // If lite-api sets a Retry-After header, prefer that. The whole point: when
+      // Jupiter is hammered (e.g. during pump.fun graduation rush), 1-2 retries
+      // aren't enough; we need to actually wait for the burst window to clear.
+      const headerMs = getJupiterRateLimitRetryMs(response);
+      const backoffMs = Math.min(16000, 1000 * 2 ** attempt) + Math.floor(Math.random() * 500);
+      const retryMs = Math.max(headerMs, backoffMs);
       await setJupiterCooldown(retryMs);
       await sleep(retryMs);
-      return requestJson<T>(url, init, retries - 1);
+      return requestJson<T>(url, init, retries - 1, attempt + 1);
     }
 
     throw new JupiterRequestError(
@@ -250,6 +261,8 @@ async function getSwapExecutionDetails(input: {
   wallet: PublicKey;
   tokenMint: string;
   signatureCount: number;
+  /** "buy" or "sell" — used to validate the direction of the realized delta. */
+  side?: "buy" | "sell";
 }): Promise<SwapExecutionDetails> {
   const connection = getRaydiumConnection();
   let transaction: Awaited<ReturnType<typeof connection.getTransaction>> | null = null;
@@ -269,6 +282,16 @@ async function getSwapExecutionDetails(input: {
 
   if (!transaction?.meta) {
     throw new Error(`Confirmed transaction meta was not available for ${input.signature}`);
+  }
+
+  // CRITICAL: confirmTransaction only confirms inclusion in a block — it does NOT
+  // verify the tx succeeded. A failed tx (meta.err != null) is still "confirmed",
+  // and without this check we'd record it as a sell with tokenDelta=0, solChange=0
+  // and close the position as if it sold for nothing. Always raise on err.
+  if (transaction.meta.err) {
+    throw new Error(
+      `On-chain tx failed: ${JSON.stringify(transaction.meta.err)} (sig=${input.signature})`
+    );
   }
 
   const feeLamports = transaction?.meta?.fee;
@@ -308,6 +331,51 @@ async function getSwapExecutionDetails(input: {
   const tokenDeltaRaw = sumRaw(postTB) - sumRaw(preTB);
   const tokenDelta = rawBigIntToUiAmount(tokenDeltaRaw, tokenDecimals);
 
+  // Direction / magnitude sanity checks. We don't throw on these (the SOL was
+  // already moved on-chain — better to record what happened than to lose context)
+  // but we surface anomalies so a wrongly-classified swap is investigable later.
+  if (input.side === "sell") {
+    // Sell expects: tokenDelta < 0 (lost tokens), actualSolChange > 0 (got SOL minus fees).
+    const tokenWentRightDirection = tokenDeltaRaw < 0n;
+    const solWentRightDirection = (actualSolChange ?? 0) > 0;
+    if (!tokenWentRightDirection || !solWentRightDirection) {
+      createBotLog({
+        level: "warn",
+        event: "SELL_TX_DIRECTION_ANOMALY",
+        message: `Sell tx ${input.signature.slice(0, 16)}.. had unexpected deltas — tokenDelta=${tokenDelta}, solChange=${actualSolChange}`,
+        tokenMint: input.tokenMint,
+        signature: input.signature,
+        metadata: { tokenDelta, actualSolChange, side: "sell" }
+      });
+    }
+    if (tokenDeltaRaw === 0n) {
+      // No tokens left the wallet — almost certainly a failed/no-op tx that
+      // confirmTransaction nevertheless accepted. Treat as failure.
+      throw new Error(
+        `Sell tx ${input.signature} moved zero tokens — treating as failure`
+      );
+    }
+  } else if (input.side === "buy") {
+    // Buy expects: tokenDelta > 0, actualSolChange < 0.
+    const tokenWentRightDirection = tokenDeltaRaw > 0n;
+    const solWentRightDirection = (actualSolChange ?? 0) < 0;
+    if (!tokenWentRightDirection || !solWentRightDirection) {
+      createBotLog({
+        level: "warn",
+        event: "BUY_TX_DIRECTION_ANOMALY",
+        message: `Buy tx ${input.signature.slice(0, 16)}.. had unexpected deltas — tokenDelta=${tokenDelta}, solChange=${actualSolChange}`,
+        tokenMint: input.tokenMint,
+        signature: input.signature,
+        metadata: { tokenDelta, actualSolChange, side: "buy" }
+      });
+    }
+    if (tokenDeltaRaw === 0n) {
+      throw new Error(
+        `Buy tx ${input.signature} received zero tokens — treating as failure`
+      );
+    }
+  }
+
   return {
     networkFeeSol,
     priorityFeeSol,
@@ -321,13 +389,16 @@ export async function getJupiterSwapExecutionDetails(input: {
   signature: string;
   tokenMint: string;
   signatureCount?: number;
+  /** When set, validates dt direction (sell expects tokens out, sol in). */
+  side?: "buy" | "sell";
 }) {
   const wallet = getTradingWallet();
   return getSwapExecutionDetails({
     signature: input.signature,
     wallet: wallet.publicKey,
     tokenMint: input.tokenMint,
-    signatureCount: input.signatureCount || 1
+    signatureCount: input.signatureCount || 1,
+    side: input.side
   });
 }
 
@@ -409,6 +480,27 @@ async function executeJupiterSwap(params: {
     if (params.shouldSend && !(await params.shouldSend())) {
       throw new Error("Swap aborted before send: trading was stopped");
     }
+
+    // Jito disabled per user request (2026-05-27). To re-enable, uncomment the
+    // block below — Jupiter buys then bundle through Jito with the existing tip.
+    //   let signature: string | null = null;
+    //   if (params.side === "buy") {
+    //     try {
+    //       const { sendBuyViaJito } = await import("./jitoSender");
+    //       const jitoResult = await sendBuyViaJito(connection, wallet, transaction, params.tokenMint);
+    //       signature = jitoResult.signature;
+    //     } catch (jitoErr) {
+    //       const msg = jitoErr instanceof Error ? jitoErr.message : String(jitoErr);
+    //       createBotLog({
+    //         level: "warn",
+    //         event: "BUY_JITO_FALLBACK",
+    //         message: `Jupiter Jito failed: ${msg.slice(0, 120)}`,
+    //         tokenMint: params.tokenMint,
+    //         metadata: { reason: msg, route: "Jupiter" }
+    //       });
+    //     }
+    //   }
+    //   if (!signature) { … fallback … }
     const signature = await connection.sendRawTransaction(transaction.serialize(), {
       skipPreflight: false,
       maxRetries: 3
@@ -429,7 +521,8 @@ async function executeJupiterSwap(params: {
       signature,
       wallet: wallet.publicKey,
       tokenMint: params.tokenMint,
-      signatureCount: transaction.signatures.length || 1
+      signatureCount: transaction.signatures.length || 1,
+      side: params.side
     });
 
     const tokenAmountDelta = Math.abs(executionDetails.tokenDelta);
@@ -531,7 +624,17 @@ export async function executeJupiterSell(
   // dynamic import keeps the module graph cycle-free (ataRentRecovery → logs → ...).
   void import("./ataRentRecovery").then(({ closeTokenAccountIfEmpty }) =>
     closeTokenAccountIfEmpty(getRaydiumConnection(), getTradingWallet(), new PublicKey(tokenMint))
-  ).catch(() => undefined);
+  ).catch((error) => {
+    // Dynamic import or the close itself rejected unexpectedly. Visible in feed so
+    // we notice if rent stops returning after Jupiter sells.
+    createBotLog({
+      level: "warn",
+      event: "ATA_CLOSE_UNHANDLED",
+      message: error instanceof Error ? error.message : "Unhandled ATA close rejection",
+      tokenMint,
+      metadata: { route: "Jupiter" }
+    });
+  });
 
   return {
     tokenMint,

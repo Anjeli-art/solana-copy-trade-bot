@@ -352,7 +352,11 @@ export class HeliusWebSocketManager extends EventEmitter {
       method: "accountSubscribe",
       params: [
         account,
-        { encoding: "base64", commitment: "confirmed" }
+        // `processed` cuts ~300-500ms off vs `confirmed`. Account-state push fires
+        // as soon as a leader includes the tx in a block, not after vote lockout.
+        // Worth the marginal fork-rollback risk because price updates are
+        // idempotent — we just recompute on next push.
+        { encoding: "base64", commitment: "processed" }
       ]
     }, id);
     state.pendingRequestId = undefined;
@@ -391,7 +395,13 @@ export class HeliusWebSocketManager extends EventEmitter {
       method: "logsSubscribe",
       params: [
         { mentions: [trader] },
-        { commitment: "confirmed" }
+        // CRITICAL for snipe latency. `processed` fires when leader includes the
+        // tx in a block (~400ms after broadcast). `confirmed` waits for vote
+        // lockout (~800-1200ms). This is the difference between being the 5th
+        // wallet vs the 2nd wallet after the trader.
+        // Risk: <0.1% of `processed` txs roll back on fork. We accept that — the
+        // alternative cost is missed snipes which is much worse.
+        { commitment: "processed" }
       ]
     }, id);
     state.pendingRequestId = undefined;

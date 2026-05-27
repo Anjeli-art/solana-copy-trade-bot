@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import { randomUUID } from "crypto";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { db } from "../db/sqlite";
+import { publishRealtimeFromWorker } from "../realtime/workerBroadcast";
 import {
   detectTraderPlatformBuys,
   detectTraderPlatformSells,
@@ -27,6 +28,7 @@ import { readState } from "../state/store";
 import { withRpcLimit } from "../utils/rpcLimiter";
 import type { ActivePosition } from "../types";
 import { createHeliusWebSocketManager, type HeliusWebSocketManager } from "../utils/heliusWebSocket";
+import { TRANSACTION_READ_COMMITMENT } from "../utils/commitment";
 import BN from "bn.js";
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { decodeTokenAccountAmount, getConstantProductOutputRaw } from "../services/pumpswapPool";
@@ -200,6 +202,11 @@ function createMirrorPosition(input: {
     now(),
     now()
   );
+  // Push open event so UI sees the new position before next snapshot.
+  const row = db.prepare("SELECT * FROM mirror_positions WHERE id = ?").get(input.id);
+  if (row) {
+    publishRealtimeFromWorker({ type: "mirror_position:opened", payload: { position: row } });
+  }
 }
 
 function closeMirrorPosition(input: {
@@ -251,12 +258,24 @@ function closeMirrorPosition(input: {
   );
 
   db.prepare("DELETE FROM mirror_positions WHERE id = ?").run(input.positionId);
+  // Push close event with the new closed-position row so UI moves it to the
+  // "closed" section instantly without waiting for next snapshot.
+  const closedRow = db
+    .prepare("SELECT * FROM mirror_closed_positions WHERE id = ?")
+    .get(input.positionId);
+  if (closedRow) {
+    publishRealtimeFromWorker({ type: "mirror_position:closed", payload: { position: closedRow } });
+  }
 }
 
 function reducePositionAmount(positionId: string, newTokenAmount: number) {
   db.prepare(
     "UPDATE mirror_positions SET token_amount = ?, updated_at = ? WHERE id = ?"
   ).run(newTokenAmount, now(), positionId);
+  const row = db.prepare("SELECT * FROM mirror_positions WHERE id = ?").get(positionId);
+  if (row) {
+    publishRealtimeFromWorker({ type: "mirror_position:updated", payload: { position: row } });
+  }
 }
 
 async function handleMirrorBuy(
@@ -546,42 +565,44 @@ async function handleMirrorSell(sell: DetectedTraderSell) {
       position.monitor_type === "orca_whirlpool" && Boolean(position.pool_address);
     // CPMM/CLMM/Orca native sells need token decimals — read from pool record (we saved it).
     const tokenDecimals = position.pool_base_decimals ?? 0;
-    const result = useNativePumpSwap
-      ? await executePumpSwapSell(sell.tokenMint, amountToSell, position.pool_address as string)
-      : useNativePumpFun
-        ? await executePumpFunSell(sell.tokenMint, amountToSell)
-        : useNativeRaydium
-          ? await executeRaydiumAmmV4Sell(sell.tokenMint, amountToSell, position.pool_address as string)
-          : useNativeRaydiumCpmm
-            ? await executeRaydiumCpmmSell(
-                sell.tokenMint,
-                amountToSell,
-                tokenDecimals,
-                position.pool_address as string
-              )
-            : useNativeRaydiumClmm
-              ? await executeRaydiumClmmSell(
-                  sell.tokenMint,
-                  amountToSell,
-                  tokenDecimals,
-                  position.pool_address as string
-                )
-              : useNativeOrca
-                ? await executeOrcaWhirlpoolSell(
-                    sell.tokenMint,
-                    amountToSell,
-                    tokenDecimals,
-                    position.pool_address as string
-                  )
-                : await executeJupiterSell(sell.tokenMint, amountToSell);
+    // Native sell may fail on edge-case curves (LaunchBlitz mayhem, freshly-graduated,
+    // etc). Fall back to Jupiter on any error so an auto-sell signal doesn't get stuck.
+    let result: Awaited<ReturnType<typeof executeJupiterSell>>;
+    let usedFallback = false;
+    const runMirrorSellNative = async () => {
+      if (useNativePumpSwap) return executePumpSwapSell(sell.tokenMint, amountToSell, position.pool_address as string);
+      if (useNativePumpFun) return executePumpFunSell(sell.tokenMint, amountToSell);
+      if (useNativeRaydium) return executeRaydiumAmmV4Sell(sell.tokenMint, amountToSell, position.pool_address as string);
+      if (useNativeRaydiumCpmm) return executeRaydiumCpmmSell(sell.tokenMint, amountToSell, tokenDecimals, position.pool_address as string);
+      if (useNativeRaydiumClmm) return executeRaydiumClmmSell(sell.tokenMint, amountToSell, tokenDecimals, position.pool_address as string);
+      if (useNativeOrca) return executeOrcaWhirlpoolSell(sell.tokenMint, amountToSell, tokenDecimals, position.pool_address as string);
+      return executeJupiterSell(sell.tokenMint, amountToSell);
+    };
+    try {
+      result = (await runMirrorSellNative()) as Awaited<ReturnType<typeof executeJupiterSell>>;
+    } catch (nativeError) {
+      const isNativeRoute = useNativePumpSwap || useNativePumpFun || useNativeRaydium ||
+        useNativeRaydiumCpmm || useNativeRaydiumClmm || useNativeOrca;
+      if (!isNativeRoute) throw nativeError; // Jupiter already; nothing to fall back to.
+      const msg = nativeError instanceof Error ? nativeError.message : String(nativeError);
+      createBotLog({
+        level: "warn",
+        event: "NATIVE_SELL_FALLBACK_TO_JUPITER",
+        message: `Auto mirror sell: native path failed (${msg.slice(0, 120)}), retrying via Jupiter`,
+        tokenMint: sell.tokenMint,
+        metadata: { positionId: position.id }
+      });
+      result = (await executeJupiterSell(sell.tokenMint, amountToSell)) as Awaited<ReturnType<typeof executeJupiterSell>>;
+      usedFallback = true;
+    }
     const solReceived = result.actualSolChange !== undefined
       ? Math.abs(result.actualSolChange)
       : result.outputSol || 0;
 
+    // Use cached solPriceUsd — exit price recording only needs ≤10s old rate.
     const state = await readState();
-    const wallet = await refreshWalletBalance(state.wallet);
     const exitPriceUsd =
-      amountToSell > 0 ? (solReceived * wallet.solPriceUsd) / amountToSell : 0;
+      amountToSell > 0 ? (solReceived * state.wallet.solPriceUsd) / amountToSell : 0;
 
     if (isFullSell) {
       closeMirrorPosition({
@@ -591,19 +612,21 @@ async function handleMirrorSell(sell: DetectedTraderSell) {
         exitPriceUsd,
         solReceived,
         closeReason: "mirror-sell",
-        exitPlatform: useNativePumpSwap
-          ? "PumpSwap"
-          : useNativePumpFun
-            ? "Pump.fun"
-            : useNativeRaydium
-              ? "Raydium"
-              : useNativeRaydiumCpmm
-                ? "Raydium-CPMM"
-                : useNativeRaydiumClmm
-                  ? "Raydium-CLMM"
-                  : useNativeOrca
-                    ? "Orca"
-                    : "Jupiter",
+        exitPlatform: usedFallback
+          ? "Jupiter"
+          : useNativePumpSwap
+            ? "PumpSwap"
+            : useNativePumpFun
+              ? "Pump.fun"
+              : useNativeRaydium
+                ? "Raydium"
+                : useNativeRaydiumCpmm
+                  ? "Raydium-CPMM"
+                  : useNativeRaydiumClmm
+                    ? "Raydium-CLMM"
+                    : useNativeOrca
+                      ? "Orca"
+                      : "Jupiter",
         closedAt: now()
       });
     } else {
@@ -663,8 +686,9 @@ async function processMirrorTraderSignatures(
   trader: string,
   lastSeenSignature?: string
 ) {
+  // Fallback polling path (every 60s). Read cached solPriceUsd from state —
+  // ≤10s old is plenty fresh for entry-price logging.
   const state = await readState();
-  const wallet = await refreshWalletBalance(state.wallet);
 
   let signatures;
   try {
@@ -705,12 +729,20 @@ async function processMirrorTraderSignatures(
       trader,
       s.signature,
       mirrorTrader.buy_amount_sol,
-      wallet.solPriceUsd
+      state.wallet.solPriceUsd
     );
   }
 
   return signatures[signatures.length - 1]?.signature || lastSeenSignature;
 }
+
+/**
+ * Result of attempting to process one trader signature for mirror. See
+ * copyTradeWorker.ProcessResult for the same enum and rationale.
+ */
+type MirrorProcessResult = "processed" | "skipped" | "not_ready" | "failed";
+
+const MIRROR_PROCESSED_FETCH_RETRIES = [100, 200, 400] as const;
 
 async function processSingleMirrorSignature(
   connection: Connection,
@@ -718,19 +750,32 @@ async function processSingleMirrorSignature(
   signature: string,
   buyAmountSol: number,
   solPriceUsd: number
-) {
+): Promise<MirrorProcessResult> {
   if (isMirrorProcessed(signature)) {
-    return;
+    return "skipped";
   }
 
+  // Read tx at confirmed: getParsedTransaction/getTransaction reject `processed`
+  // at runtime. WS may notify before the tx is readable, so retry on null and
+  // hand off to polling fallback by returning `not_ready`.
   let transaction;
   try {
     transaction = await withRpcLimit(() =>
       connection.getParsedTransaction(signature, {
-        commitment: "confirmed",
+        commitment: TRANSACTION_READ_COMMITMENT,
         maxSupportedTransactionVersion: 0
       })
     );
+    for (const delayMs of MIRROR_PROCESSED_FETCH_RETRIES) {
+      if (transaction) break;
+      await sleep(delayMs);
+      transaction = await withRpcLimit(() =>
+        connection.getParsedTransaction(signature, {
+          commitment: TRANSACTION_READ_COMMITMENT,
+          maxSupportedTransactionVersion: 0
+        })
+      );
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "RPC error";
     createBotLog({
@@ -741,11 +786,11 @@ async function processSingleMirrorSignature(
       signature,
       metadata: { method: "getParsedTransaction" }
     });
-    return;
+    return "failed";
   }
 
   if (!transaction) {
-    return;
+    return "not_ready";
   }
 
   // Process buys
@@ -763,6 +808,7 @@ async function processSingleMirrorSignature(
       await handleMirrorSell(sell);
     }
   }
+  return "processed";
 }
 
 /**
@@ -839,6 +885,14 @@ function updateMirrorPositionPriceInDb(positionId: string, currentPriceUsd: numb
   db.prepare(
     "UPDATE mirror_positions SET current_price_usd = ?, updated_at = ? WHERE id = ? AND status = 'open'"
   ).run(currentPriceUsd, now(), positionId);
+  // Push the updated row to all connected UI clients so the price/PnL refreshes
+  // in real time without the frontend polling. Fire-and-forget — never blocks.
+  const row = db
+    .prepare("SELECT * FROM mirror_positions WHERE id = ?")
+    .get(positionId);
+  if (row) {
+    publishRealtimeFromWorker({ type: "mirror_position:updated", payload: { position: row } });
+  }
 }
 
 export async function startMirrorTradeWorker() {
@@ -863,6 +917,15 @@ export async function startMirrorTradeWorker() {
   const updatePriceForAccount = async (account: string) => {
     const positionIds = positionsByAccount.get(account);
     if (!positionIds) return;
+    // Read solPriceUsd ONCE for the whole account update — and not via the
+    // network. The price is kept ≤10s fresh by server.ts wallet interval, which
+    // is plenty for UI display. Previously each position triggered its own
+    // refreshWalletBalance (2 RPCs: Helius getBalance + Jupiter price), causing
+    // ~10 RPS spam to both APIs and Helius 429s. solPriceUsd doesn't affect
+    // autosell decisions (those are SOL-denominated), only USD display.
+    const state = await readState();
+    const solPriceUsd = state.wallet.solPriceUsd;
+    if (solPriceUsd <= 0) return;
     for (const positionId of positionIds) {
       try {
         const pos = db
@@ -871,10 +934,8 @@ export async function startMirrorTradeWorker() {
         if (!pos) continue;
         const quotedOutSol = mirrorQuoteFromCache(pos, vaultAmounts, bondingCurveCache, clmmPoolCache, whirlpoolCache);
         if (quotedOutSol <= 0) continue;
-        const state = await readState();
-        const wallet = await refreshWalletBalance(state.wallet);
-        if (pos.token_amount <= 0 || wallet.solPriceUsd <= 0) continue;
-        const priceUsd = (quotedOutSol * wallet.solPriceUsd) / pos.token_amount;
+        if (pos.token_amount <= 0) continue;
+        const priceUsd = (quotedOutSol * solPriceUsd) / pos.token_amount;
         updateMirrorPositionPriceInDb(positionId, priceUsd);
       } catch {
         // ignore — next push will retry
@@ -916,15 +977,30 @@ export async function startMirrorTradeWorker() {
           .get(trader) as { buy_amount_sol: number } | undefined;
         if (!mirrorTrader) return;
         const state = await readState();
-        const wallet = await refreshWalletBalance(state.wallet);
-        await processSingleMirrorSignature(
+        // Use cached solPriceUsd (≤10s fresh via server.ts wallet interval).
+        // No per-signature API hit — previously this was a hot 429 source on
+        // active traders. Entry-price USD recording is fine with ≤10s old rate.
+        const result = await processSingleMirrorSignature(
           connection,
           trader,
           signature,
           mirrorTrader.buy_amount_sol,
-          wallet.solPriceUsd
+          state.wallet.solPriceUsd
         );
-        lastSeenByTrader.set(trader, signature);
+        // Only advance lastSeen on real handling. On `not_ready`/`failed` leave
+        // it so polling at `confirmed` re-fetches the signature. Otherwise we'd
+        // silently skip ~5-10% of mirror buys whenever Helius indexes lag the
+        // leader block by >700ms.
+        if (result === "processed" || result === "skipped") {
+          lastSeenByTrader.set(trader, signature);
+        } else {
+          console.warn(JSON.stringify({
+            event: "MIRROR_WS_DEFERRED_TO_POLLING",
+            trader,
+            signature,
+            result
+          }));
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown mirror WS handler error";
         console.error(JSON.stringify({ event: "MIRROR_WS_HANDLER_ERROR", trader, signature, message }));
@@ -954,6 +1030,65 @@ export async function startMirrorTradeWorker() {
     console.log("WEBSOCKET_ENDPOINT not set — mirror-trade worker will rely on polling only");
   }
 
+  // WS only pushes on actual on-chain change → for a quiet pool the price in the
+  // UI never moves, AND the WS may even drop after 2 min of silence (we close idle
+  // sockets to recover stuck connections). To guarantee the UI stays alive, every
+  // 5 seconds we ACTIVELY re-fetch each subscribed pool/curve via RPC, update the
+  // decoded cache, and recompute the per-position price. WS push is still the
+  // fast path (sub-second); this interval is the floor on staleness.
+  const ACTIVE_PRICE_REFRESH_MS = Number(process.env.MIRROR_PRICE_REFRESH_MS) > 0
+    ? Math.floor(Number(process.env.MIRROR_PRICE_REFRESH_MS))
+    : 5000;
+  const priceRefreshTimer = setInterval(async () => {
+    if (!isMirrorTradingEnabled()) return;
+    if (subscribedAccounts.size === 0) return;
+    const accounts = [...subscribedAccounts];
+    // Batch by groups of 100 (Solana getMultipleAccountsInfo limit).
+    for (let i = 0; i < accounts.length; i += 100) {
+      const chunk = accounts.slice(i, i + 100);
+      try {
+        const infos = await withRpcLimit(() =>
+          connection.getMultipleAccountsInfo(chunk.map((a) => new PublicKey(a)), "confirmed")
+        );
+        for (let j = 0; j < chunk.length; j++) {
+          const account = chunk[j];
+          const info = infos[j];
+          if (!info) continue;
+          const dataBase64 = info.data.toString("base64");
+          const kind = accountKind.get(account);
+          try {
+            if (kind === "bonding") {
+              bondingCurveCache.set(account, decodeBondingCurveFromBase64(dataBase64));
+            } else if (kind === "clmm_pool") {
+              clmmPoolCache.set(account, decodeClmmPoolFromBase64(dataBase64));
+            } else if (kind === "whirlpool") {
+              whirlpoolCache.set(account, decodeWhirlpoolFromBase64(dataBase64, account));
+            } else {
+              vaultAmounts.set(account, decodeTokenAccountAmount(dataBase64));
+            }
+            await updatePriceForAccount(account);
+          } catch (decodeError) {
+            createBotLog({
+              level: "warn",
+              event: "MIRROR_POOL_DECODE_FAILED",
+              message: decodeError instanceof Error ? decodeError.message : "Unknown decode error",
+              metadata: { account, kind: kind ?? "spltoken" }
+            });
+          }
+        }
+      } catch (rpcError) {
+        createBotLog({
+          level: "warn",
+          event: "MIRROR_REFRESH_RPC_FAILED",
+          message: rpcError instanceof Error ? rpcError.message : "RPC error during mirror price refresh",
+          metadata: { batchSize: chunk.length }
+        });
+      }
+    }
+  }, ACTIVE_PRICE_REFRESH_MS);
+  // Ensure timer doesn't keep the process alive after stop.
+  priceRefreshTimer.unref?.();
+
   console.log(`Mirror-trade worker started. Poll interval: ${pollIntervalMs}ms (fallback). WS: ${wsManager ? "on" : "off"}`);
   createBotLog({
     event: "MIRROR_WORKER_STARTED",
@@ -969,6 +1104,7 @@ export async function startMirrorTradeWorker() {
         message: "Mirror-trade worker stopped: mirror trading disabled"
       });
       if (wsManager) wsManager.close();
+      clearInterval(priceRefreshTimer);
       return;
     }
 
@@ -977,10 +1113,15 @@ export async function startMirrorTradeWorker() {
     // Keep WS subscriptions in sync with enabled mirror traders.
     if (wsManager) {
       wsManager.syncSubscriptions(traders.map((t) => t.address)).catch((error) => {
-        console.error(JSON.stringify({
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(JSON.stringify({ event: "MIRROR_WS_SYNC_ERROR", message }));
+        // Also push to bot_logs — if the trader sub list drifts, mirror buys go silent.
+        createBotLog({
+          level: "warn",
           event: "MIRROR_WS_SYNC_ERROR",
-          message: error instanceof Error ? error.message : String(error)
-        }));
+          message,
+          metadata: { traderCount: traders.length }
+        });
       });
 
       // Sync pool/curve subscriptions for open mirror positions so we can keep
@@ -1035,7 +1176,16 @@ export async function startMirrorTradeWorker() {
       for (const acc of requiredAccounts.keys()) {
         if (!subscribedAccounts.has(acc)) {
           subscribedAccounts.add(acc);
-          wsManager.subscribeAccount(acc).catch(() => undefined);
+          wsManager.subscribeAccount(acc).catch((error) => {
+            // Failed subscriptions silently means price never updates → potentially
+            // catastrophic (positions accumulate uninspected). Surface every failure.
+            createBotLog({
+              level: "warn",
+              event: "MIRROR_WS_SUBSCRIBE_FAILED",
+              message: error instanceof Error ? error.message : "Subscribe error",
+              metadata: { account: acc, kind: requiredKind.get(acc) }
+            });
+          });
         }
       }
       for (const acc of [...subscribedAccounts]) {
@@ -1046,7 +1196,16 @@ export async function startMirrorTradeWorker() {
           clmmPoolCache.delete(acc);
           whirlpoolCache.delete(acc);
           accountKind.delete(acc);
-          wsManager.unsubscribeAccount(acc).catch(() => undefined);
+          wsManager.unsubscribeAccount(acc).catch((error) => {
+            // Unsubscribe failure is mostly cosmetic but log it — repeated
+            // unsubs piling up could indicate the WS manager is wedged.
+            createBotLog({
+              level: "info",
+              event: "MIRROR_WS_UNSUBSCRIBE_FAILED",
+              message: error instanceof Error ? error.message : "Unsubscribe error",
+              metadata: { account: acc }
+            });
+          });
         }
       }
     }

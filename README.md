@@ -1,12 +1,13 @@
 # Solana Copy Trade Bot
 
-Local Solana copy-trading bot with a Node.js backend, SQLite storage, Jupiter plus native DEX execution, Helius WebSocket subscriptions with RPC polling as fallback, and a React/Vite dashboard.
+Local Solana copy-trading bot with a Node.js backend, SQLite storage, Jupiter plus native DEX execution, Helius WebSocket subscriptions with RPC polling as fallback, a local realtime WebSocket for UI updates, and a React/Vite dashboard.
 
 The bot runs locally. It watches enabled trader wallets, detects supported buy transactions, can copy those buys from your local wallet, tracks open positions, and can sell positions automatically by profit, stop-loss, or timeout rules. It also has Mirror mode for full wallet copying: one source wallet can be mirrored so buys open mirror positions and detected source sells close or reduce those mirror positions.
 
 ## Current Features
 
 - Backend API on `127.0.0.1:3001` by default.
+- Local UI realtime WebSocket on `ws://127.0.0.1:3001/ws`.
 - React dashboard on `127.0.0.1:5173`.
 - SQLite persistence for settings, wallet snapshot, tracked traders, active positions, closed positions, processed signatures, token metadata cache, and bot logs.
 - Separate UI controls for auto-buy and auto-sell.
@@ -26,6 +27,9 @@ The bot runs locally. It watches enabled trader wallets, detects supported buy t
 - Jupiter request throttling, retry, and cooldown handling for `429` rate limits.
 - Recovery for stale positions stuck in `selling` after a failed auto-sell.
 - Recovery for copy-buy transactions that were sent before the active position was written.
+- Runtime worker recovery: enabled copy/profit/mirror workers are restored after backend restart and reflected in UI status.
+- Best-effort ATA rent recovery after successful sells.
+- Realtime UI push events for wallet, logs, active positions, mirror status, mirror traders, and mirror positions.
 - Backend tests for platform detection, state writes, position rules, validation, and token safety helpers.
 
 ## Architecture
@@ -39,17 +43,25 @@ Runtime processes:
 
 - API server: serves state, settings, traders, positions, logs, analytics, manual buy/sell, metadata, and trading controls.
 - Copy worker: subscribes to enabled trader wallets via Helius WebSocket (`logsSubscribe`) for push detection; HTTP polling runs in parallel as a fallback. Creates copied buy positions.
-- Profit watcher: polls open positions and sells when exit rules trigger.
+- Profit watcher: keeps native pool/curve prices warm through pool account WebSocket plus active RPC refresh, falls back to Jupiter quote pricing when native monitor data is missing, and sells when exit rules trigger.
 - Mirror worker: subscribes to one mirror source wallet via WebSocket with polling fallback, copies buy and sell direction.
+- Local realtime server: pushes backend/worker state changes to the dashboard over `ws://127.0.0.1:3001/ws`.
 
 ```mermaid
 flowchart LR
+  subgraph ui [Dashboard Realtime]
+    UI[React Dashboard] <-->|snapshot + push events| LocalWS[Local WS /ws]
+    Workers[Worker processes] --> Internal[POST /api/internal/realtime]
+    Internal --> LocalWS
+  end
   subgraph monitor [Copy Worker]
     WS[Helius WebSocket logsSubscribe] --> Detect[platformDetector]
     RPC[HTTP RPC polling fallback] --> Detect
     Detect --> Route{Native route known?}
     Route -->|yes| NativeBuy[Native SDK Buy]
     Route -->|no| Buy[Jupiter Buy]
+    NativeBuy --> TxCheck[RPC transaction meta validation]
+    Buy --> TxCheck
   end
   subgraph fullcopy [Mirror Worker]
     MWS[Helius WebSocket logsSubscribe] --> MDetect[platformDetector]
@@ -57,28 +69,37 @@ flowchart LR
     MDetect --> MRoute{Native route known?}
     MRoute -->|yes| MNative[Native SDK Mirror Buy/Sell]
     MRoute -->|no| MJup[Jupiter Mirror Buy/Sell]
+    MNative -.native sell fails.-> MJup
   end
   subgraph exit [Profit Watcher x2]
     PoolWS[Pool account WebSocket] --> Price[Live pool quote]
+    PoolRPC[Active getMultipleAccountsInfo refresh] --> Price
     JQuote[Jupiter quote fallback] --> Price
     Price --> Rules[positionRules]
     Rules --> ExitRoute{Stored monitor type?}
     ExitRoute -->|yes| NativeSell[Native SDK Sell]
     ExitRoute -->|no| Sell[Jupiter Sell]
+    NativeSell -.native sell fails.-> Sell
   end
-  UI[React Dashboard] --> API[Express API]
+  UI --> API[Node HTTP API]
   API --> SQLite[(SQLite)]
+  API --> Runtime[(trading_runtime + running_workers)]
+  Runtime --> Workers
+  TxCheck --> SQLite
   Buy --> SQLite
   NativeBuy --> SQLite
   MNative --> SQLite
   MJup --> SQLite
   Sell --> SQLite
   NativeSell --> SQLite
+  SQLite --> LocalWS
 ```
 
 Both pipelines (WebSocket push and HTTP polling) feed into the same handler. Deduplication is enforced by `processed_signatures` / `mirror_processed_signatures` so overlapping pipelines never double-execute a buy.
 
-The API starts workers as child processes when the dashboard buttons are used.
+The API starts workers as child processes when the dashboard buttons are used. It also persists runtime flags in `trading_runtime` and child PIDs in `running_workers`, so after an API restart enabled workers are restored and the UI status reflects the actual live process state.
+
+The dashboard no longer relies only on REST polling. On connect, the local realtime WebSocket sends a snapshot of wallet/settings/active positions/mirror state. After that, workers publish state changes through `POST /api/internal/realtime`, and the API broadcasts those events to connected UI clients.
 
 ## Trading Controls
 
@@ -149,7 +170,7 @@ That debug log includes the token mint, signature, SOL/WSOL change, token amount
 
 Duplicate copy attempts are prevented through the `processed_signatures` table. If an active position for the same token already exists, the buy is skipped and logged.
 
-If Jupiter sends a buy transaction but the backend crashes or restarts before writing the active position, the recovery logic keeps the buy lock in `tx_sent`, checks transaction meta through RPC, and reconstructs the active position when possible.
+After every submitted buy/sell transaction, the backend reads transaction meta through RPC and verifies that the transaction succeeded and moved tokens in the expected direction. If Jupiter sends a buy transaction but the backend crashes or restarts before writing the active position, the recovery logic keeps the buy lock in `tx_sent`, checks transaction meta through RPC, and reconstructs the active position when possible.
 
 ## Mirror Full-Copy Flow
 
@@ -160,7 +181,7 @@ Mirror mode copies one source wallet through the same WebSocket + polling fallba
 3. Click `Start mirror`.
 4. The mirror worker subscribes to the source wallet through Helius `logsSubscribe` over `WEBSOCKET_ENDPOINT` and pushes new signatures in real time. HTTP polling through `MAINNET_ENDPOINT` runs in parallel as fallback.
 5. If the source wallet buys a supported token, the bot opens a mirror position through the native connector when possible, otherwise through Jupiter.
-6. If the source wallet sells a token that has an open mirror position, the bot sells the matching local position through the stored native connector when possible, otherwise through Jupiter.
+6. If the source wallet sells a token that has an open mirror position, the bot sells the matching local position through the stored native connector when possible. If a native sell errors, the worker falls back to Jupiter so the position is not stuck.
 7. Full source sells close the mirror position; partial source sells reduce the tracked mirror amount.
 8. Open and closed mirror positions are shown together on the Mirror page.
 
@@ -175,10 +196,10 @@ Mirror data is stored separately from regular copy-trading:
 
 1. Click `Start sell`.
 2. The profit watcher reads current settings each cycle.
-3. It checks every open position through live pool WebSocket prices when native monitoring data is available, otherwise through Jupiter quote pricing.
+3. It checks every open position through live pool WebSocket prices when native monitoring data is available. Each poll tick also actively refreshes subscribed pool/curve accounts through RPC so quiet pools and reconnects do not leave stale prices. Positions without native monitoring data use Jupiter quote pricing as fallback.
 4. It updates `currentPriceUsd` on the position.
-5. It sells through the stored native connector when possible, otherwise through Jupiter, when one of the exit rules triggers.
-6. The position is moved from active positions to closed positions.
+5. It sells through the stored native connector when possible, otherwise through Jupiter, when one of the exit rules triggers. If a native sell errors, it retries through Jupiter.
+6. The backend validates transaction meta, closes empty token accounts when possible to recover ATA rent, then moves the position from active positions to closed positions.
 
 Exit reasons:
 
@@ -191,7 +212,7 @@ If an auto-sell fails after the position was marked as `selling`, the watcher re
 
 ## Manual Trading
 
-Manual actions use Jupiter execution too:
+Manual regular copy-trading actions use Jupiter execution:
 
 - `POST /api/swap/buy`: manual buy by token mint.
 - `POST /api/swap/repeat-buy`: manual buy for a token that already exists in active or closed positions.
@@ -203,6 +224,8 @@ Manual positions use:
 - `sourceTrader = manual-repeat` for repeat buy.
 
 Manual analytics are separated from trader copy analytics.
+
+Mirror manual sell uses the mirror position's stored native route first and falls back to Jupiter if the native sell path fails.
 
 ## Analytics
 
@@ -266,6 +289,15 @@ Useful log events include:
 - `MIRROR_SELL_EXECUTED`
 - `MIRROR_SELL_MANUAL`
 - `MIRROR_SELL_MANUAL_FAILED`
+- `NATIVE_SELL_FALLBACK_TO_JUPITER`
+- `ATA_CLOSE_UNHANDLED`
+- `SELL_TX_DIRECTION_ANOMALY`
+- `BUY_TX_DIRECTION_ANOMALY`
+- `PROFIT_REFRESH_RPC_FAILED`
+- `MIRROR_REFRESH_RPC_FAILED`
+- `PROFIT_POOL_DECODE_FAILED`
+- `MIRROR_POOL_DECODE_FAILED`
+- `MIRROR_WS_SUBSCRIBE_FAILED`
 
 Backend endpoint:
 
@@ -308,12 +340,21 @@ Trader detection runs on two parallel pipelines:
 - **Primary**: Helius `logsSubscribe` over `WEBSOCKET_ENDPOINT`. Push notifications arrive within ~100–300ms of block confirmation. Auto-reconnects with exponential backoff (1s → 30s max) and heartbeats every 30s to catch silent disconnects.
 - **Fallback**: HTTP RPC polling over `MAINNET_ENDPOINT`. Slow interval (60s+ recommended). Guarantees coverage if the WebSocket connection dies or the host machine sleeps. Both pipelines deduplicate through `processed_signatures` and `mirror_processed_signatures`.
 
+Dashboard updates use a separate local WebSocket:
+
+- Endpoint: `ws://127.0.0.1:3001/ws` by default.
+- On connect: sends a `snapshot` with wallet, settings, active positions, mirror status, mirror traders, mirror open positions, and recent mirror closed positions.
+- Push events: `wallet:updated`, `active_position:*`, `mirror_position:*`, `mirror_status:updated`, `mirror_traders:updated`, `bot_log:new`.
+- Worker IPC: worker processes publish events through loopback-only `POST /api/internal/realtime`.
+- UI fallback: if the local WebSocket is down for more than 10 seconds, mirror hooks fall back to REST refresh.
+
 Current defaults / variables:
 
 - WebSocket endpoint: `WEBSOCKET_ENDPOINT` (e.g. `wss://mainnet.helius-rpc.com/?api-key=...`). When unset the workers fall back to polling only.
 - Copy worker poll fallback interval: `COPY_TRADE_POLL_MS`, fallback `FREE_MONITOR_POLL_MS`, default `5000`. Recommended `60000` with WebSocket on.
 - Copy signature limit: `COPY_TRADE_SIGNATURE_LIMIT`, fallback `FREE_MONITOR_SIGNATURE_LIMIT`, default `20`.
 - Profit watcher poll: `PROFIT_WATCHER_POLL_MS`, default `5000`.
+- Mirror active price refresh: `MIRROR_PRICE_REFRESH_MS`, default `5000`.
 - Mirror worker poll fallback interval: `MIRROR_TRADE_POLL_MS`, fallback `COPY_TRADE_POLL_MS`, default `2000`.
 - RPC concurrency cap (Helius tier protection): `RPC_MAX_CONCURRENT`, default `3`. Set to `1` on the Free tier.
 - Jupiter price cooldown after rate limit: `JUPITER_RATE_LIMIT_COOLDOWN_MS`, default `60000`.
@@ -321,6 +362,7 @@ Current defaults / variables:
 - Jupiter request retries: `JUPITER_REQUEST_RETRIES`.
 - Jupiter retry-after fallback: `JUPITER_RATE_LIMIT_RETRY_MS`.
 - Stale selling recovery: `PROFIT_WATCHER_SELLING_RECOVERY_MS`, default `300000`.
+- Token-safety Jupiter quote probe: `SKIP_JUPITER_SAFETY_QUOTES`, default enabled unless set to `false`.
 
 ## API Endpoints
 
@@ -334,6 +376,7 @@ Common endpoints:
 - `GET /api/wallet`
 - `PUT /api/wallet`
 - `PATCH /api/wallet`
+- `POST /api/wallet/sweep-rent`
 - `GET /api/trading`
 - `POST /api/trading/start`
 - `POST /api/trading/stop`
@@ -375,6 +418,8 @@ Common endpoints:
 - `GET /api/blacklist`
 - `POST /api/blacklist`
 - `DELETE /api/blacklist/:mint`
+- `WS /ws`
+- `POST /api/internal/realtime` (loopback worker IPC)
 - `GET /api/mirror/status`
 - `POST /api/mirror/start`
 - `POST /api/mirror/stop`
@@ -415,10 +460,12 @@ JUPITER_REQUEST_INTERVAL_MS=2500
 JUPITER_REQUEST_RETRIES=1
 JUPITER_RATE_LIMIT_RETRY_MS=60000
 JUPITER_RATE_LIMIT_COOLDOWN_MS=60000
+SKIP_JUPITER_SAFETY_QUOTES=true
 COPY_TRADE_POLL_MS=1000
 COPY_TRADE_SIGNATURE_LIMIT=20
 COPY_TRADE_INCLUDE_HISTORY=false
 MIRROR_TRADE_POLL_MS=2000
+MIRROR_PRICE_REFRESH_MS=5000
 FREE_MONITOR_POLL_MS=
 FREE_MONITOR_SIGNATURE_LIMIT=
 PROFIT_WATCHER_POLL_MS=10000
@@ -501,8 +548,8 @@ Node 24 is required because the backend uses `node:sqlite`.
 
 - Trader monitoring uses Helius WebSocket `logsSubscribe` with HTTP RPC polling as a slow fallback; gRPC / LaserStream streaming is not used (Helius Business tier feature).
 - Native execution exists for PumpSwap, Pump.fun, Raydium AMM v4, Raydium CPMM, and Raydium CLMM when enough pool metadata is detected; otherwise execution falls back to Jupiter.
-- Jupiter `429` rate limits can still delay fallback buys, fallback price checks, or fallback sells on free/public API tiers.
+- Jupiter `429` rate limits can still delay fallback buys, fallback price checks, or fallback sells on free/public API tiers, although keyed `api.jup.ag` usage and skipped safety quote probes reduce pressure.
 - Token safety checks are warning-only and do not block copy/mirror buys.
-- Honeypot/tax checks are inferred from quotes, not guaranteed simulations.
+- Honeypot/tax checks are inferred from quotes only when Jupiter safety quote probing is enabled; otherwise token safety is mint-level only.
 - Token metadata depends on Helius DAS availability and cache freshness.
 - Real trading can lose money because of latency, slippage, failed routes, low liquidity, price impact, and token contract risk.

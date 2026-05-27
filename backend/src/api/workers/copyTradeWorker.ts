@@ -22,6 +22,7 @@ import { refreshWalletBalance } from "../services/walletBalance";
 import { addActivePosition, readState } from "../state/store";
 import { withRpcLimit } from "../utils/rpcLimiter";
 import { createHeliusWebSocketManager, type HeliusWebSocketManager } from "../utils/heliusWebSocket";
+import { TRANSACTION_READ_COMMITMENT } from "../utils/commitment";
 
 dotenv.config({
   path: path.resolve(__dirname, "../../helpers/.env")
@@ -591,24 +592,54 @@ async function handleDetectedBuy(buy: DetectedTraderBuy) {
   }
 }
 
+/**
+ * Result of attempting to process one trader signature.
+ *
+ * - `processed`: tx was fetched and trade detection ran (success or no-buy alike)
+ * - `skipped`: signature was already in processed_signatures DB (idempotent skip)
+ * - `not_ready`: RPC returned null at `processed` commitment — likely still
+ *   propagating through the cluster. Caller should NOT advance lastSeen so the
+ *   polling fallback can pick it up once it confirms.
+ * - `failed`: RPC error. Same — leave lastSeen for fallback retry.
+ */
+type ProcessResult = "processed" | "skipped" | "not_ready" | "failed";
+
+// Retry window for null-reads on `processed` commitment. The leader block
+// usually propagates to Helius's read index within ~100-500ms. After this many
+// attempts we give up and let the polling fallback retry at `confirmed`.
+const PROCESSED_FETCH_RETRIES = [100, 200, 400] as const;
+
 async function processSingleSignature(
   connection: Connection,
   trader: string,
   signature: string,
   solPriceUsd: number
-) {
+): Promise<ProcessResult> {
   if (isProcessed(signature)) {
-    return;
+    return "skipped";
   }
 
+  // Read the tx at confirmed: getParsedTransaction/getTransaction reject
+  // `processed` at runtime. WS may notify before the transaction is readable, so
+  // retry on null and leave lastSeen untouched if it is still not ready.
   let transaction;
   try {
     transaction = await withRpcLimit(() =>
       connection.getParsedTransaction(signature, {
-        commitment: "confirmed",
+        commitment: TRANSACTION_READ_COMMITMENT,
         maxSupportedTransactionVersion: 0
       })
     );
+    for (const delayMs of PROCESSED_FETCH_RETRIES) {
+      if (transaction) break;
+      await sleep(delayMs);
+      transaction = await withRpcLimit(() =>
+        connection.getParsedTransaction(signature, {
+          commitment: TRANSACTION_READ_COMMITMENT,
+          maxSupportedTransactionVersion: 0
+        })
+      );
+    }
   } catch (error) {
     logRpcRequestFailed({
       method: "getParsedTransaction",
@@ -617,11 +648,13 @@ async function processSingleSignature(
       endpoint: getRpcEndpoint(),
       error
     });
-    return;
+    return "failed";
   }
 
   if (!transaction) {
-    return;
+    // Tx visible at WS but not yet indexed for read after ~700ms total wait.
+    // Leave it for polling fallback so we don't silently lose the snipe.
+    return "not_ready";
   }
 
   const unmatchedBuyLikes = detectUnmatchedTraderBuyLikes(transaction, trader, signature);
@@ -649,6 +682,7 @@ async function processSingleSignature(
   for (const buy of buys) {
     await handleDetectedBuy(buy);
   }
+  return "processed";
 }
 
 async function processTraderSignatures(
@@ -735,9 +769,22 @@ export async function startCopyTradeWorker() {
       try {
         const state = await readState();
         const wallet = await refreshWalletBalance(state.wallet);
-        await processSingleSignature(connection, trader, signature, wallet.solPriceUsd);
-        // Advance lastSeen so polling fallback doesn't re-fetch this one.
-        lastSeenByTrader.set(trader, signature);
+        const result = await processSingleSignature(connection, trader, signature, wallet.solPriceUsd);
+        // CRITICAL: only advance lastSeen when we actually handled this signature.
+        // If RPC returned null at `processed` (tx not yet indexed), we leave
+        // lastSeen alone so the polling fallback re-fetches at `confirmed` and
+        // picks up the buy we'd otherwise lose. Without this, switching the WS
+        // subscription to `processed` would silently drop ~5-10% of snipes.
+        if (result === "processed" || result === "skipped") {
+          lastSeenByTrader.set(trader, signature);
+        } else {
+          console.warn(JSON.stringify({
+            event: "COPY_WS_DEFERRED_TO_POLLING",
+            trader,
+            signature,
+            result
+          }));
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown copy WS handler error";
         console.error(JSON.stringify({ event: "COPY_WS_HANDLER_ERROR", trader, signature, message }));
@@ -774,10 +821,14 @@ export async function startCopyTradeWorker() {
     // Keep WS subscriptions in sync with the current enabled trader list.
     if (wsManager) {
       wsManager.syncSubscriptions(traders.map((t) => t.address)).catch((error) => {
-        console.error(JSON.stringify({
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(JSON.stringify({ event: "COPY_WS_SYNC_ERROR", message }));
+        createBotLog({
+          level: "warn",
           event: "COPY_WS_SYNC_ERROR",
-          message: error instanceof Error ? error.message : String(error)
-        }));
+          message,
+          metadata: { traderCount: traders.length }
+        });
       });
     }
 

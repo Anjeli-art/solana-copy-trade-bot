@@ -1,6 +1,7 @@
 import path from "path";
 import dotenv from "dotenv";
-import { LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { Connection, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
+import { withRpcLimit } from "../utils/rpcLimiter";
 import { executeJupiterSell, getJupiterSellQuote, isJupiterRateLimitError } from "../services/jupiterSwap";
 import type { JupiterQuote } from "../services/jupiterSwap";
 import { executePumpSwapSell } from "../services/pumpswapSwap";
@@ -10,7 +11,8 @@ import { executeRaydiumCpmmSell, executeRaydiumClmmSell } from "../services/rayd
 import { executeOrcaWhirlpoolSell } from "../services/orcaWhirlpoolSwap";
 import { createBotLog } from "../services/logs";
 import { getPositionCloseSignal } from "../services/positionRules";
-import { refreshWalletBalance } from "../services/walletBalance";
+// refreshWalletBalance intentionally not imported here — the worker reads
+// solPriceUsd directly from state (kept fresh by server.ts wallet interval).
 import {
   closeActivePosition as closeActivePositionInStore,
   patchActivePosition,
@@ -181,6 +183,9 @@ async function inspectPosition(
       const cooldownMs = getJupiterRateLimitCooldownMs();
       const retryAt = new Date(Date.now() + cooldownMs).toISOString();
       jupiterPriceBackoffUntilByToken.set(position.tokenMint, Date.now() + cooldownMs);
+      // Keep this in bot_logs — if we see this firing AFTER native cache is warm,
+      // it means monitor_type isn't being set for some platform and we're silently
+      // falling through to Jupiter. Surfacing it makes that bug visible.
       createBotLog({
         level: "warn",
         event: "JUPITER_PRICE_RATE_LIMITED",
@@ -191,7 +196,9 @@ async function inspectPosition(
         positionId: position.id,
         metadata: {
           cooldownMs,
-          retryAt
+          retryAt,
+          monitorType: position.monitorType ?? null,
+          poolAddress: position.poolAddress ?? null
         }
       });
       return;
@@ -292,7 +299,7 @@ async function inspectPosition(
     position.monitorType === "raydium_clmm" && Boolean(position.poolAddress);
   const useNativeOrca =
     position.monitorType === "orca_whirlpool" && Boolean(position.poolAddress);
-  const executionRoute = useNativePumpSwap
+  let executionRoute = useNativePumpSwap
     ? "PumpSwap"
     : useNativePumpFun
       ? "Pump.fun"
@@ -306,48 +313,68 @@ async function inspectPosition(
               ? "Orca"
               : "Jupiter";
   const positionDecimals = position.poolBaseDecimals ?? 0;
+  const isNativeRoute = useNativePumpSwap || useNativePumpFun || useNativeRaydium ||
+    useNativeRaydiumCpmm || useNativeRaydiumClmm || useNativeOrca;
 
   let result: Awaited<ReturnType<typeof executeJupiterSell>>;
   try {
-    result = useNativePumpSwap
-      ? (await executePumpSwapSell(
-          position.tokenMint,
-          position.tokenAmount,
-          position.poolAddress as string
-        )) as unknown as Awaited<ReturnType<typeof executeJupiterSell>>
-      : useNativePumpFun
-        ? (await executePumpFunSell(
+    try {
+      // Native path first.
+      result = useNativePumpSwap
+        ? (await executePumpSwapSell(
             position.tokenMint,
-            position.tokenAmount
+            position.tokenAmount,
+            position.poolAddress as string
           )) as unknown as Awaited<ReturnType<typeof executeJupiterSell>>
-        : useNativeRaydium
-          ? (await executeRaydiumAmmV4Sell(
+        : useNativePumpFun
+          ? (await executePumpFunSell(
               position.tokenMint,
-              position.tokenAmount,
-              position.poolAddress as string
+              position.tokenAmount
             )) as unknown as Awaited<ReturnType<typeof executeJupiterSell>>
-          : useNativeRaydiumCpmm
-            ? (await executeRaydiumCpmmSell(
+          : useNativeRaydium
+            ? (await executeRaydiumAmmV4Sell(
                 position.tokenMint,
                 position.tokenAmount,
-                positionDecimals,
                 position.poolAddress as string
               )) as unknown as Awaited<ReturnType<typeof executeJupiterSell>>
-            : useNativeRaydiumClmm
-              ? (await executeRaydiumClmmSell(
+            : useNativeRaydiumCpmm
+              ? (await executeRaydiumCpmmSell(
                   position.tokenMint,
                   position.tokenAmount,
                   positionDecimals,
                   position.poolAddress as string
                 )) as unknown as Awaited<ReturnType<typeof executeJupiterSell>>
-              : useNativeOrca
-                ? (await executeOrcaWhirlpoolSell(
+              : useNativeRaydiumClmm
+                ? (await executeRaydiumClmmSell(
                     position.tokenMint,
                     position.tokenAmount,
                     positionDecimals,
                     position.poolAddress as string
                   )) as unknown as Awaited<ReturnType<typeof executeJupiterSell>>
-                : await executeJupiterSell(position.tokenMint, position.tokenAmount, priceQuoteResponse);
+                : useNativeOrca
+                  ? (await executeOrcaWhirlpoolSell(
+                      position.tokenMint,
+                      position.tokenAmount,
+                      positionDecimals,
+                      position.poolAddress as string
+                    )) as unknown as Awaited<ReturnType<typeof executeJupiterSell>>
+                  : await executeJupiterSell(position.tokenMint, position.tokenAmount, priceQuoteResponse);
+    } catch (nativeError) {
+      if (!isNativeRoute) throw nativeError;
+      // Native sell hit an edge case (LaunchBlitz mayhem overflow, etc).
+      // Fall back to Jupiter so the position actually exits.
+      const msg = nativeError instanceof Error ? nativeError.message : String(nativeError);
+      createBotLog({
+        level: "warn",
+        event: "NATIVE_SELL_FALLBACK_TO_JUPITER",
+        message: `Auto sell: native ${executionRoute} failed (${msg.slice(0, 120)}), retrying via Jupiter`,
+        tokenMint: position.tokenMint,
+        positionId: position.id,
+        metadata: { nativeRoute: executionRoute, closeReason }
+      });
+      result = await executeJupiterSell(position.tokenMint, position.tokenAmount, priceQuoteResponse);
+      executionRoute = "Jupiter";
+    }
   } catch (error) {
     sellInProgress.delete(position.id);
     await patchActivePosition(position.id, { status: "open", currentPriceUsd });
@@ -523,6 +550,15 @@ export async function startProfitWatcherWorker() {
   const clmmPoolCache = new Map<string, ClmmPoolDecoded>();
   const whirlpoolCache = new Map<string, WhirlpoolDecoded>();
   const subscribedAccounts = new Set<string>();
+
+  // Reusable Connection for the active on-chain refresh inside the poll loop. We
+  // could reuse getRaydiumConnection() but that one's used for swap execution; we
+  // want the price-refresh RPC to share rate limiter via withRpcLimit rather than
+  // contend with sell-in-flight transactions on the same singleton.
+  const pollConnection = new Connection(
+    process.env.MAINNET_ENDPOINT || process.env.RPC_ENDPOINT || "",
+    "confirmed"
+  );
   // account → positions that depend on it
   const positionsByAccount = new Map<string, Set<string>>();
   // account → which decoder to use
@@ -541,7 +577,10 @@ export async function startProfitWatcherWorker() {
       if (position.profitTier !== workerTier) return;
       const quotedOutSol = quoteFromVaultCache(position, vaultAmounts, bondingCurveCache, clmmPoolCache, whirlpoolCache);
       if (quotedOutSol <= 0) return;
-      const wallet = await refreshWalletBalance(state.wallet);
+      // Use cached solPriceUsd (≤10s fresh). Auto-sell trigger is SOL-denominated
+      // anyway (multiplier = quotedOutSol / spentSol), so price freshness only
+      // affects USD display, not trade decisions. Previously this was the main
+      // Helius 429 source — fired on every WS pool push.
       const targetMultiplier =
         workerTier === "high"
           ? state.settings.highProfitTargetMultiplier
@@ -552,7 +591,7 @@ export async function startProfitWatcherWorker() {
         targetMultiplier,
         state.settings.stopLossMultiplier,
         state.settings.positionTimeoutMinutes,
-        wallet.solPriceUsd,
+        state.wallet.solPriceUsd,
         quotedOutSol
       );
     } catch (error) {
@@ -616,7 +655,9 @@ export async function startProfitWatcherWorker() {
     try {
       await recoverStaleSellingPositions(sellingRecoveryMs);
       const state = await readState();
-      const wallet = await refreshWalletBalance(state.wallet);
+      // Cached solPriceUsd — same rationale as in triggerInspectByPositionId.
+      // Server.ts wallet interval keeps it ≤10s fresh.
+      const wallet = state.wallet;
       const targetMultiplier =
         workerTier === "high"
           ? state.settings.highProfitTargetMultiplier
@@ -699,7 +740,68 @@ export async function startProfitWatcherWorker() {
             clmmPoolCache.delete(account);
             whirlpoolCache.delete(account);
             accountKind.delete(account);
-            wsManager.unsubscribeAccount(account).catch(() => undefined);
+            wsManager.unsubscribeAccount(account).catch((error) => {
+              createBotLog({
+                level: "info",
+                event: "PROFIT_WS_UNSUBSCRIBE_FAILED",
+                message: error instanceof Error ? error.message : "Unsubscribe error",
+                metadata: { account, tier: workerTier }
+              });
+            });
+          }
+        }
+      }
+
+      // ACTIVE on-chain refresh — before iterating positions, fetch every subscribed
+      // pool/curve via RPC and update the local cache. This guarantees that the
+      // cache is fresh on every poll tick even if WS pushes haven't fired yet (new
+      // positions, post-reconnect, idle pools). Without this, we'd fall through to
+      // Jupiter for the first N seconds of every position's life → 429 spam.
+      if (subscribedAccounts.size > 0) {
+        const accounts = [...subscribedAccounts];
+        for (let i = 0; i < accounts.length; i += 100) {
+          const chunk = accounts.slice(i, i + 100);
+          try {
+            const infos = await withRpcLimit(() =>
+              pollConnection.getMultipleAccountsInfo(chunk.map((a) => new PublicKey(a)), "confirmed")
+            );
+            for (let j = 0; j < chunk.length; j++) {
+              const account = chunk[j];
+              const info = infos[j];
+              if (!info) continue;
+              const dataBase64 = info.data.toString("base64");
+              const kind = accountKind.get(account);
+              try {
+                if (kind === "bonding") {
+                  bondingCurveCache.set(account, decodeBondingCurveFromBase64(dataBase64));
+                } else if (kind === "clmm_pool") {
+                  clmmPoolCache.set(account, decodeClmmPoolFromBase64(dataBase64));
+                } else if (kind === "whirlpool") {
+                  whirlpoolCache.set(account, decodeWhirlpoolFromBase64(dataBase64, account));
+                } else {
+                  vaultAmounts.set(account, decodeTokenAccountAmount(dataBase64));
+                }
+              } catch (decodeError) {
+                // Decode failed for a single account — usually means we subscribed to the
+                // wrong account kind (e.g. a pool that's actually a different DEX schema).
+                // Surface it so we notice misclassified pools.
+                createBotLog({
+                  level: "warn",
+                  event: "PROFIT_POOL_DECODE_FAILED",
+                  message: decodeError instanceof Error ? decodeError.message : "Unknown decode error",
+                  metadata: { account, kind: kind ?? "spltoken", tier: workerTier }
+                });
+              }
+            }
+          } catch (rpcError) {
+            // One batch failed — next tick retries. Log so an RPC outage is visible
+            // instead of just showing as "stale prices".
+            createBotLog({
+              level: "warn",
+              event: "PROFIT_REFRESH_RPC_FAILED",
+              message: rpcError instanceof Error ? rpcError.message : "RPC error during price refresh",
+              metadata: { tier: workerTier, batchSize: chunk.length }
+            });
           }
         }
       }

@@ -161,6 +161,8 @@ export type MirrorTraderAnalytics = {
   totalSolSpent: number;
   totalSolReceived: number;
   realizedPnlSol: number;
+  unrealizedPnlSol: number;
+  totalPnlSol: number;
   winCount: number;
   lossCount: number;
   winRate: number;

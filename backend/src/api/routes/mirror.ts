@@ -54,6 +54,22 @@ function getMirrorTraders() {
     }>;
 }
 
+// Call after every mirror_traders mutation so UI gets the new list via WS
+// instead of having to refetch on the next poll tick.
+function broadcastMirrorTraders() {
+  const traders = getMirrorTraders().map((t) => ({
+    address: t.address,
+    label: t.label,
+    enabled: Boolean(t.enabled),
+    buyAmountSol: t.buy_amount_sol,
+    createdAt: t.created_at,
+    updatedAt: t.updated_at
+  }));
+  void import("../realtime/broadcaster").then(({ broadcaster }) =>
+    broadcaster.publish({ type: "mirror_traders:updated", payload: { traders } })
+  ).catch(() => undefined);
+}
+
 function getMirrorPositions() {
   return db
     .prepare(
@@ -166,6 +182,7 @@ export async function handleMirror(
       metadata: { label, buyAmountSol: amount }
     });
 
+    broadcastMirrorTraders();
     sendJson(response, 200, {
       data: getMirrorTraders().map((t) => ({
         address: t.address,
@@ -208,6 +225,7 @@ export async function handleMirror(
         .run(buyAmountSol, now(), address);
     }
 
+    broadcastMirrorTraders();
     sendJson(response, 200, {
       data: getMirrorTraders().map((t) => ({
         address: t.address,
@@ -237,6 +255,7 @@ export async function handleMirror(
       trader: address
     });
 
+    broadcastMirrorTraders();
     sendJson(response, 200, {
       data: getMirrorTraders().map((t) => ({
         address: t.address,
@@ -348,47 +367,56 @@ export async function handleMirror(
         pos.monitor_type === "raydium_clmm" && Boolean(pos.pool_address);
       const useNativeOrca =
         pos.monitor_type === "orca_whirlpool" && Boolean(pos.pool_address);
-      const result = useNativePumpSwap
-        ? await executePumpSwapSell(pos.token_mint, pos.token_amount, pos.pool_address as string)
-        : useNativePumpFun
-          ? await executePumpFunSell(pos.token_mint, pos.token_amount)
-          : useNativeRaydium
-            ? await executeRaydiumAmmV4Sell(pos.token_mint, pos.token_amount, pos.pool_address as string)
-            : useNativeRaydiumCpmm
-              ? await executeRaydiumCpmmSell(
-                  pos.token_mint,
-                  pos.token_amount,
-                  tokenDecimals,
-                  pos.pool_address as string
-                )
-              : useNativeRaydiumClmm
-                ? await executeRaydiumClmmSell(
-                    pos.token_mint,
-                    pos.token_amount,
-                    tokenDecimals,
-                    pos.pool_address as string
-                  )
-                : useNativeOrca
-                  ? await executeOrcaWhirlpoolSell(
-                      pos.token_mint,
-                      pos.token_amount,
-                      tokenDecimals,
-                      pos.pool_address as string
-                    )
-                  : await executeJupiterSell(pos.token_mint, pos.token_amount);
-      const executionRoute = useNativePumpSwap
-        ? "PumpSwap"
-        : useNativePumpFun
-          ? "Pump.fun"
-          : useNativeRaydium
-            ? "Raydium"
-            : useNativeRaydiumCpmm
-              ? "Raydium-CPMM"
-              : useNativeRaydiumClmm
-                ? "Raydium-CLMM"
-                : useNativeOrca
-                  ? "Orca"
-                  : "Jupiter";
+      // Native sells can fail for edge cases the SDK doesn't handle (LaunchBlitz
+       // mayhem curves, freshly-minted vaults, etc). If the native path errors out,
+       // fall back to Jupiter so the user is never stuck unable to sell.
+      let result: Awaited<ReturnType<typeof executeJupiterSell>>;
+      let executionRoute: string = "Jupiter";
+      const runNative = async () => {
+        if (useNativePumpSwap) {
+          executionRoute = "PumpSwap";
+          return executePumpSwapSell(pos.token_mint, pos.token_amount, pos.pool_address as string);
+        }
+        if (useNativePumpFun) {
+          executionRoute = "Pump.fun";
+          return executePumpFunSell(pos.token_mint, pos.token_amount);
+        }
+        if (useNativeRaydium) {
+          executionRoute = "Raydium";
+          return executeRaydiumAmmV4Sell(pos.token_mint, pos.token_amount, pos.pool_address as string);
+        }
+        if (useNativeRaydiumCpmm) {
+          executionRoute = "Raydium-CPMM";
+          return executeRaydiumCpmmSell(pos.token_mint, pos.token_amount, tokenDecimals, pos.pool_address as string);
+        }
+        if (useNativeRaydiumClmm) {
+          executionRoute = "Raydium-CLMM";
+          return executeRaydiumClmmSell(pos.token_mint, pos.token_amount, tokenDecimals, pos.pool_address as string);
+        }
+        if (useNativeOrca) {
+          executionRoute = "Orca";
+          return executeOrcaWhirlpoolSell(pos.token_mint, pos.token_amount, tokenDecimals, pos.pool_address as string);
+        }
+        executionRoute = "Jupiter";
+        return executeJupiterSell(pos.token_mint, pos.token_amount);
+      };
+      try {
+        result = (await runNative()) as Awaited<ReturnType<typeof executeJupiterSell>>;
+      } catch (nativeError) {
+        const nativeRoute = executionRoute;
+        // Don't fallback if Jupiter was already what we tried.
+        if (nativeRoute === "Jupiter") throw nativeError;
+        const msg = nativeError instanceof Error ? nativeError.message : String(nativeError);
+        createBotLog({
+          level: "warn",
+          event: "NATIVE_SELL_FALLBACK_TO_JUPITER",
+          message: `Native ${nativeRoute} sell failed (${msg.slice(0, 120)}), falling back to Jupiter`,
+          tokenMint: pos.token_mint,
+          metadata: { positionId, nativeRoute }
+        });
+        result = (await executeJupiterSell(pos.token_mint, pos.token_amount)) as Awaited<ReturnType<typeof executeJupiterSell>>;
+        executionRoute = "Jupiter";
+      }
       const state = await readState();
       const wallet = await refreshWalletBalance(state.wallet);
       const solReceived = result.actualSolChange !== undefined
@@ -428,6 +456,16 @@ export async function handleMirror(
         now()
       );
       db.prepare("DELETE FROM mirror_positions WHERE id = ?").run(pos.id);
+
+      // WS push: closed-position move so UI updates the table without a poll.
+      const closedRow = db
+        .prepare("SELECT * FROM mirror_closed_positions WHERE id = ?")
+        .get(pos.id);
+      if (closedRow) {
+        void import("../realtime/broadcaster").then(({ broadcaster }) =>
+          broadcaster.publish({ type: "mirror_position:closed", payload: { position: closedRow } })
+        ).catch(() => undefined);
+      }
 
       createBotLog({
         event: "MIRROR_SELL_MANUAL",

@@ -1,4 +1,5 @@
 import http from "http";
+import { readJsonBody } from "./http/request";
 import { sendError, sendJson, sendNoContent } from "./http/response";
 import { handleAnalytics } from "./routes/analytics";
 import { handleActivePositions, handleClosedPositions } from "./routes/positions";
@@ -14,6 +15,8 @@ import { handleTrading } from "./routes/trading";
 import { handleWallet, handleWalletSweepRent } from "./routes/wallet";
 import { refreshWalletBalance } from "./services/walletBalance";
 import { readState, saveWallet } from "./state/store";
+import { attachRealtimeServer } from "./realtime/realtimeServer";
+import { broadcaster } from "./realtime/broadcaster";
 
 const host = process.env.API_HOST || "127.0.0.1";
 const port = Number(process.env.API_PORT || 3001);
@@ -31,6 +34,21 @@ const server = http.createServer(async (request, response) => {
 
     const url = new URL(request.url || "/", `http://${request.headers.host || `${host}:${port}`}`);
     const parts = getPathParts(url.pathname);
+
+    // Internal IPC endpoint: workers POST realtime events here. Loopback-only
+    // since API_HOST defaults to 127.0.0.1. Not exposed publicly.
+    if (url.pathname === "/api/internal/realtime" && request.method === "POST") {
+      try {
+        const body = await readJsonBody(request) as Record<string, unknown> | null;
+        if (body && typeof body.type === "string") {
+          broadcaster.publish(body as never);
+        }
+        sendJson(response, 200, { data: { ok: true } });
+      } catch {
+        sendJson(response, 200, { data: { ok: true } }); // ignore parse errors
+      }
+      return;
+    }
 
     if (url.pathname === "/api/health" && request.method === "GET") {
       sendJson(response, 200, {
@@ -132,8 +150,14 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
+// Attach WebSocket server for realtime push updates to the UI.
+// Frontend connects to ws://host:port/ws and gets a snapshot on connect plus
+// every state mutation broadcast through `broadcaster.publish`.
+attachRealtimeServer(server);
+
 server.listen(port, host, () => {
   console.log(`Copy bot API listening at http://${host}:${port}`);
+  console.log(`Realtime WS endpoint at ws://${host}:${port}/ws`);
 });
 
 // Periodically refresh SOL price + wallet balance so workers (and the UI) always have
@@ -146,6 +170,8 @@ setInterval(async () => {
     const state = await readState();
     const refreshed = await refreshWalletBalance(state.wallet);
     await saveWallet(refreshed);
+    // Push wallet update to all connected UI clients via WS — no polling needed.
+    broadcaster.publish({ type: "wallet:updated", payload: { wallet: refreshed } });
   } catch (error) {
     console.error(JSON.stringify({
       event: "WALLET_REFRESH_TICK_FAILED",

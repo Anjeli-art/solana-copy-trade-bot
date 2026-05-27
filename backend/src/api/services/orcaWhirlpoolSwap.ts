@@ -35,6 +35,7 @@ import { getJupiterSwapExecutionDetails } from "./jupiterSwap";
 import { createBotLog } from "./logs";
 import { closeTokenAccountIfEmpty } from "./ataRentRecovery";
 import { getActualTokenBalance } from "./tokenBalance";
+import { sendBuyViaJito } from "./jitoSender";
 
 dotenv.config({
   path: path.resolve(__dirname, "../../helpers/.env")
@@ -167,6 +168,26 @@ async function buildAndSendSwap(params: {
   if (params.options.shouldSend && !(await params.options.shouldSend())) {
     throw new Error("Swap aborted before send: trading was stopped");
   }
+
+  // Jito disabled per user request (2026-05-27). To re-enable, uncomment the
+  // block below and replace the direct send with the let/if-fallback pattern.
+  //   let signature: string | null = null;
+  //   if (params.side === "buy") {
+  //     try {
+  //       const jitoResult = await sendBuyViaJito(connection, getTradingWallet(), tx, params.tokenMint);
+  //       signature = jitoResult.signature;
+  //     } catch (jitoErr) {
+  //       const msg = jitoErr instanceof Error ? jitoErr.message : String(jitoErr);
+  //       createBotLog({
+  //         level: "warn",
+  //         event: "BUY_JITO_FALLBACK",
+  //         message: `Orca Jito failed: ${msg.slice(0, 120)}`,
+  //         tokenMint: params.tokenMint,
+  //         metadata: { reason: msg, route: "Orca" }
+  //       });
+  //     }
+  //   }
+  //   if (!signature) { … fallback … }
   const signature = await connection.sendRawTransaction(tx.serialize(), {
     skipPreflight: false,
     maxRetries: 3
@@ -201,7 +222,8 @@ export async function executeOrcaWhirlpoolBuy(
     const execDetails = await getJupiterSwapExecutionDetails({
       signature,
       tokenMint,
-      signatureCount
+      signatureCount,
+      side: "buy"
     });
 
     return {
@@ -252,14 +274,23 @@ export async function executeOrcaWhirlpoolSell(
     const execDetails = await getJupiterSwapExecutionDetails({
       signature,
       tokenMint,
-      signatureCount
+      signatureCount,
+      side: "sell"
     });
 
     closeTokenAccountIfEmpty(
       getRaydiumConnection(),
       getTradingWallet(),
       new PublicKey(tokenMint)
-    ).catch(() => undefined);
+    ).catch((error) => {
+      createBotLog({
+        level: "warn",
+        event: "ATA_CLOSE_UNHANDLED",
+        message: error instanceof Error ? error.message : "Unhandled ATA close rejection",
+        tokenMint,
+        metadata: { route: "Orca" }
+      });
+    });
 
     const outputSol = execDetails.actualSolChange !== undefined ? Math.abs(execDetails.actualSolChange) : 0;
     return {

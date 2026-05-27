@@ -246,11 +246,38 @@ async function inspectMint(tokenMint: string) {
   };
 }
 
+// Some mints (Pump.fun bonding curve, fresh launches) aren't indexed by Jupiter yet
+// but ARE tradable through our native connectors. The pre-buy safety quote was the
+// biggest source of Jupiter 429s — every detected buy fired two quotes here. Skip the
+// quote layer entirely when the env says so; the on-chain mint inspection (extensions,
+// freeze authority, mint authority) still runs and is the more useful safety signal.
+const SKIP_JUPITER_SAFETY_QUOTES = process.env.SKIP_JUPITER_SAFETY_QUOTES !== "false";
+
 async function inspectQuotes(tokenMint: string, amountSol: number) {
   let buyQuote: JupiterQuote | undefined;
   let sellQuote: JupiterQuote | undefined;
   let buyQuoteError: string | undefined;
   let sellQuoteError: string | undefined;
+
+  if (SKIP_JUPITER_SAFETY_QUOTES) {
+    // Skip the round-trip probe — caller will only get mint-level findings.
+    const quoteSafety = buildQuoteSafetyFindings({
+      amountSol,
+      buyQuote: undefined,
+      sellQuote: undefined,
+      buyQuoteError: "skipped",
+      sellQuoteError: "skipped"
+    });
+    return {
+      buyQuoteOutAmount: undefined,
+      sellQuoteOutSol: quoteSafety.sellQuoteOutSol,
+      roundTripLossPct: quoteSafety.roundTripLossPct,
+      buyPriceImpactPct: quoteSafety.buyPriceImpactPct,
+      sellPriceImpactPct: quoteSafety.sellPriceImpactPct,
+      // Drop findings — they'd all be "skipped" noise.
+      findings: []
+    };
+  }
 
   try {
     buyQuote = await getJupiterQuote({

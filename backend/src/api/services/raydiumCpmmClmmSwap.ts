@@ -33,6 +33,7 @@ import { getJupiterSwapExecutionDetails } from "./jupiterSwap";
 import { createBotLog } from "./logs";
 import { closeTokenAccountIfEmpty } from "./ataRentRecovery";
 import { getActualTokenBalance } from "./tokenBalance";
+import { sendBuyViaJito } from "./jitoSender";
 
 dotenv.config({
   path: path.resolve(__dirname, "../../helpers/.env")
@@ -91,16 +92,38 @@ async function sendAndConfirm(
   options: {
     shouldSend?: () => boolean | Promise<boolean>;
     onSignature?: (signature: string) => void | Promise<void>;
+    /** Buy only — Jito bundle first, RPC fallback. */
+    useJito?: boolean;
+    tokenMint?: string;
   }
 ): Promise<{ signature: string; signatureCount: number }> {
   const connection = getRaydiumConnection();
   if (options.shouldSend && !(await options.shouldSend())) {
     throw new Error("Swap aborted before send: trading was stopped");
   }
-  const signature = await connection.sendRawTransaction(signedTx.serialize(), {
-    skipPreflight: false,
-    maxRetries: 3
-  });
+  let signature: string | null = null;
+  if (options.useJito) {
+    try {
+      const wallet = getTradingWallet();
+      const jitoResult = await sendBuyViaJito(connection, wallet, signedTx, options.tokenMint);
+      signature = jitoResult.signature;
+    } catch (jitoErr) {
+      const msg = jitoErr instanceof Error ? jitoErr.message : String(jitoErr);
+      createBotLog({
+        level: "warn",
+        event: "BUY_JITO_FALLBACK",
+        message: `Raydium CPMM/CLMM Jito failed: ${msg.slice(0, 120)}`,
+        tokenMint: options.tokenMint,
+        metadata: { reason: msg, route: "Raydium-CPMM/CLMM" }
+      });
+    }
+  }
+  if (!signature) {
+    signature = await connection.sendRawTransaction(signedTx.serialize(), {
+      skipPreflight: false,
+      maxRetries: 3
+    });
+  }
   await options.onSignature?.(signature);
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
   await connection.confirmTransaction(
@@ -152,11 +175,17 @@ export async function executeRaydiumCpmmBuy(
     })) as { transaction: Transaction };
 
     transaction.partialSign(getTradingWallet());
-    const { signature, signatureCount } = await sendAndConfirm(transaction, options);
+    // Jito disabled per user request — uncomment to re-enable.
+    const { signature, signatureCount } = await sendAndConfirm(transaction, {
+      ...options
+      // useJito: true,
+      // tokenMint
+    });
     const execDetails = await getJupiterSwapExecutionDetails({
       signature,
       tokenMint,
-      signatureCount
+      signatureCount,
+      side: "buy"
     });
     // inputAmount was used for fee/slippage calc above; not needed by SDK swap params
     void inputAmount;
@@ -234,14 +263,23 @@ export async function executeRaydiumCpmmSell(
     const execDetails = await getJupiterSwapExecutionDetails({
       signature,
       tokenMint,
-      signatureCount
+      signatureCount,
+      side: "sell"
     });
 
     closeTokenAccountIfEmpty(
       getRaydiumConnection(),
       getTradingWallet(),
       new PublicKey(tokenMint)
-    ).catch(() => undefined);
+    ).catch((error) => {
+      createBotLog({
+        level: "warn",
+        event: "ATA_CLOSE_UNHANDLED",
+        message: error instanceof Error ? error.message : "Unhandled ATA close rejection",
+        tokenMint,
+        metadata: { route: "Raydium-CPMM/CLMM" }
+      });
+    });
 
     const outputSol = execDetails.actualSolChange !== undefined ? Math.abs(execDetails.actualSolChange) : 0;
     return {
@@ -315,11 +353,17 @@ export async function executeRaydiumClmmBuy(
     })) as { transaction: Transaction };
 
     transaction.partialSign(getTradingWallet());
-    const { signature, signatureCount } = await sendAndConfirm(transaction, options);
+    // Jito disabled per user request — uncomment to re-enable.
+    const { signature, signatureCount } = await sendAndConfirm(transaction, {
+      ...options
+      // useJito: true,
+      // tokenMint
+    });
     const execDetails = await getJupiterSwapExecutionDetails({
       signature,
       tokenMint,
-      signatureCount
+      signatureCount,
+      side: "buy"
     });
 
     return {
@@ -384,14 +428,23 @@ export async function executeRaydiumClmmSell(
     const execDetails = await getJupiterSwapExecutionDetails({
       signature,
       tokenMint,
-      signatureCount
+      signatureCount,
+      side: "sell"
     });
 
     closeTokenAccountIfEmpty(
       getRaydiumConnection(),
       getTradingWallet(),
       new PublicKey(tokenMint)
-    ).catch(() => undefined);
+    ).catch((error) => {
+      createBotLog({
+        level: "warn",
+        event: "ATA_CLOSE_UNHANDLED",
+        message: error instanceof Error ? error.message : "Unhandled ATA close rejection",
+        tokenMint,
+        metadata: { route: "Raydium-CPMM/CLMM" }
+      });
+    });
 
     const outputSol = execDetails.actualSolChange !== undefined ? Math.abs(execDetails.actualSolChange) : 0;
     return {

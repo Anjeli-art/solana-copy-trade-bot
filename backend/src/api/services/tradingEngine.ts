@@ -30,19 +30,29 @@ const state: TradingEngineState = {
 };
 const processes: ManagedProcess[] = [];
 
-// Kill any workers left from a previous server session
+function isPidAlive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getRuntimeFlag(key: string) {
+  const row = db.prepare("SELECT value FROM trading_runtime WHERE key = ?").get(key) as { value: string } | undefined;
+  return row?.value === "true";
+}
+
+// Keep live workers visible after an API restart and only clean dead rows.
 function cleanupStaleWorkers() {
   const rows = db.prepare("SELECT name, pid FROM running_workers").all() as Array<{ name: string; pid: number }>;
   for (const row of rows) {
-    try {
-      process.kill(row.pid, "SIGTERM");
-      console.log(`[trading] Killed stale worker '${row.name}' (pid ${row.pid}) from previous session`);
-    } catch {
-      // Process already dead — ignore ESRCH
+    if (isPidAlive(row.pid)) {
+      console.log(`[trading] Found live worker '${row.name}' (pid ${row.pid}) from previous session`);
+    } else {
+      db.prepare("DELETE FROM running_workers WHERE name = ? AND pid = ?").run(row.name, row.pid);
     }
-  }
-  if (rows.length > 0) {
-    db.prepare("DELETE FROM running_workers").run();
   }
 }
 
@@ -259,6 +269,14 @@ function spawnManagedProcess(name: ManagedProcess["name"], script: string, extra
   if (processes.some((item) => item.name === name)) {
     return;
   }
+  const stored = db.prepare("SELECT pid FROM running_workers WHERE name = ?").get(name) as { pid: number } | undefined;
+  if (stored && isPidAlive(stored.pid)) {
+    console.log(`[trading] Worker '${name}' is already running (pid ${stored.pid})`);
+    return;
+  }
+  if (stored) {
+    removeWorkerPid(name);
+  }
 
   const child = spawn("npm", ["run", script], {
     cwd: backendRoot,
@@ -339,14 +357,46 @@ export function getTradingStatus() {
 }
 
 export function getMirrorStatus() {
+  const memoryProcesses = processes
+    .filter((item) => isMirrorProcess(item.name))
+    .map((item) => ({ name: item.name, pid: item.process.pid }));
+  const memoryPids = new Set(memoryProcesses.map((item) => item.pid).filter((pid): pid is number => pid !== undefined));
+  const storedProcesses = (
+    db.prepare("SELECT name, pid FROM running_workers WHERE name = ?").all("mirror") as Array<{
+      name: ManagedProcess["name"];
+      pid: number;
+    }>
+  )
+    .filter((item) => isPidAlive(item.pid) && !memoryPids.has(item.pid))
+    .map((item) => ({ name: item.name, pid: item.pid }));
+  const enabled = state.mirrorEnabled || memoryProcesses.length > 0 || storedProcesses.length > 0;
+
   return {
-    enabled: state.mirrorEnabled,
-    mirrorEnabled: state.mirrorEnabled,
-    processes: processes
-      .filter((item) => isMirrorProcess(item.name))
-      .map((item) => ({ name: item.name, pid: item.process.pid }))
+    enabled,
+    mirrorEnabled: enabled,
+    processes: [...memoryProcesses, ...storedProcesses]
   };
 }
+
+function restoreRuntimeWorkers() {
+  if (getRuntimeFlag("copy_enabled")) {
+    state.copyEnabled = true;
+    spawnManagedProcess("copy", "worker:copy");
+  }
+
+  if (getRuntimeFlag("profit_enabled")) {
+    state.profitEnabled = true;
+    spawnManagedProcess("profit-low", "worker:profit", { PROFIT_WATCHER_TIER: "low" });
+    spawnManagedProcess("profit-high", "worker:profit", { PROFIT_WATCHER_TIER: "high" });
+  }
+
+  if (getRuntimeFlag("mirror_enabled")) {
+    state.mirrorEnabled = true;
+    spawnManagedProcess("mirror", "worker:mirror");
+  }
+}
+
+restoreRuntimeWorkers();
 
 export function startCopyTrading() {
   state.copyEnabled = true;
@@ -429,7 +479,11 @@ export function startMirrorTrading() {
     message: "Mirror trading was started from UI"
   });
 
-  return getMirrorStatus();
+  const status = getMirrorStatus();
+  void import("../realtime/broadcaster").then(({ broadcaster }) =>
+    broadcaster.publish({ type: "mirror_status:updated", payload: { status } })
+  ).catch(() => undefined);
+  return status;
 }
 
 export function stopMirrorTrading() {
@@ -442,5 +496,9 @@ export function stopMirrorTrading() {
     message: "Mirror trading was stopped from UI"
   });
 
-  return getMirrorStatus();
+  const status = getMirrorStatus();
+  void import("../realtime/broadcaster").then(({ broadcaster }) =>
+    broadcaster.publish({ type: "mirror_status:updated", payload: { status } })
+  ).catch(() => undefined);
+  return status;
 }

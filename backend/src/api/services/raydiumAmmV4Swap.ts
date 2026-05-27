@@ -18,6 +18,7 @@ import { getJupiterSwapExecutionDetails } from "./jupiterSwap";
 import { createBotLog } from "./logs";
 import { closeTokenAccountIfEmpty } from "./ataRentRecovery";
 import { getActualTokenBalance } from "./tokenBalance";
+import { sendBuyViaJito } from "./jitoSender";
 
 // Re-export the underlying builder so we can drive it manually with shouldSend / onSignature.
 // The original executeRaydiumBuy/Sell do send+confirm internally without those hooks.
@@ -192,13 +193,35 @@ export async function executeRaydiumAmmV4Buy(
     onSignature?: (signature: string) => void | Promise<void>;
   } = {}
 ): Promise<RaydiumAmmV4SwapResult> {
+  const t0 = Date.now();
+  let tBuild = t0;
+  let tSend = t0;
   try {
     const connection = getRaydiumConnection();
     const built = await buildSwap({ side: "buy", tokenMint, amount: amountSol, poolId });
+    tBuild = Date.now();
 
     if (options.shouldSend && !(await options.shouldSend())) {
       throw new Error("Swap aborted before send: trading was stopped");
     }
+    // Jito disabled per user request (2026-05-27). Re-enable by uncommenting
+    // the Jito block below and replacing the direct sendRawTransaction.
+    //   let signature: string | null = null;
+    //   try {
+    //     const wallet = getTradingWallet();
+    //     const jitoResult = await sendBuyViaJito(connection, wallet, built.transaction, tokenMint);
+    //     signature = jitoResult.signature;
+    //   } catch (jitoErr) {
+    //     const msg = jitoErr instanceof Error ? jitoErr.message : String(jitoErr);
+    //     createBotLog({
+    //       level: "warn",
+    //       event: "BUY_JITO_FALLBACK",
+    //       message: `Raydium Jito bundle failed, falling back to RPC send: ${msg.slice(0, 120)}`,
+    //       tokenMint,
+    //       metadata: { reason: msg, route: "Raydium" }
+    //     });
+    //   }
+    //   if (!signature) { /* fallback to RPC send below */ }
     const signature = await connection.sendRawTransaction(built.transaction.serialize(), {
       skipPreflight: false,
       maxRetries: 3
@@ -208,11 +231,29 @@ export async function executeRaydiumAmmV4Buy(
       { signature, blockhash: built.blockhash, lastValidBlockHeight: built.lastValidBlockHeight },
       "confirmed"
     );
+    tSend = Date.now();
 
     const execDetails = await getJupiterSwapExecutionDetails({
       signature,
       tokenMint,
-      signatureCount: built.transaction.signatures.length || 1
+      signatureCount: built.transaction.signatures.length || 1,
+      side: "buy"
+    });
+    const tDone = Date.now();
+
+    createBotLog({
+      event: "BUY_TIMING",
+      message: `Raydium buy ${tokenMint.slice(0, 8)}… total=${tDone - t0}ms`,
+      tokenMint,
+      signature,
+      metadata: {
+        platform: "Raydium",
+        // buildSwap includes both metadata fetch + tx build, hard to split here
+        buildMs: tBuild - t0,
+        sendConfirmMs: tSend - tBuild,
+        execDetailsMs: tDone - tSend,
+        totalMs: tDone - t0
+      }
     });
 
     return {
@@ -267,12 +308,19 @@ export async function executeRaydiumAmmV4Sell(
     const execDetails = await getJupiterSwapExecutionDetails({
       signature,
       tokenMint,
-      signatureCount: built.transaction.signatures.length || 1
+      signatureCount: built.transaction.signatures.length || 1,
+      side: "sell"
     });
 
-    closeTokenAccountIfEmpty(connection, wallet, new PublicKey(tokenMint)).catch(
-      () => undefined
-    );
+    closeTokenAccountIfEmpty(connection, wallet, new PublicKey(tokenMint)).catch((error) => {
+      createBotLog({
+        level: "warn",
+        event: "ATA_CLOSE_UNHANDLED",
+        message: error instanceof Error ? error.message : "Unhandled ATA close rejection",
+        tokenMint,
+        metadata: { route: "Raydium" }
+      });
+    });
 
     const outputSol = execDetails.actualSolChange !== undefined ? Math.abs(execDetails.actualSolChange) : 0;
     return {

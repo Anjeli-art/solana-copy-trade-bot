@@ -12,10 +12,9 @@
 import BN from "bn.js";
 import { Connection, PublicKey } from "@solana/web3.js";
 import {
-  TOKEN_PROGRAM_ID,
-  TOKEN_2022_PROGRAM_ID,
   getAssociatedTokenAddress
 } from "@solana/spl-token";
+import { getMintInfo } from "./caches/mintInfoCache";
 
 export type ActualTokenBalance = {
   ata: PublicKey;
@@ -38,13 +37,9 @@ export async function getActualTokenBalance(
   wallet: PublicKey,
   mint: PublicKey
 ): Promise<ActualTokenBalance> {
-  const mintInfo = await connection.getAccountInfo(mint, "confirmed");
-  if (!mintInfo) {
-    throw new Error(`Mint ${mint.toBase58()} not found on chain`);
-  }
-  const tokenProgram = mintInfo.owner.equals(TOKEN_2022_PROGRAM_ID)
-    ? TOKEN_2022_PROGRAM_ID
-    : TOKEN_PROGRAM_ID;
+  // mintInfoCache memoises owner + decimals (immutable per mint), saving ~80ms
+  // per sell call on a cache hit.
+  const { tokenProgram } = await getMintInfo(connection, mint);
 
   const ata = await getAssociatedTokenAddress(mint, wallet, false, tokenProgram);
 

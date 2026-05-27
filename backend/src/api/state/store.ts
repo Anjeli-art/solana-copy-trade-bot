@@ -600,6 +600,11 @@ export async function saveWallet(wallet: BotWalletSnapshot) {
     savedAt
   );
 
+  // Push wallet snapshot so UI gets the new balance/PnL/SOL price immediately.
+  void import("../realtime/workerBroadcast").then(({ publishRealtimeFromWorker }) =>
+    publishRealtimeFromWorker({ type: "wallet:updated", payload: { wallet } })
+  ).catch(() => undefined);
+
   return readState();
 }
 
@@ -786,6 +791,8 @@ function insertClosedPosition(position: ClosedPosition, savedAt: string) {
 }
 
 export async function addActivePosition(position: ActivePosition, wallet?: BotWalletSnapshot) {
+  // Broadcast open event AFTER the DB transaction commits so subscribers always
+  // see a fully-persisted row.
   runTransaction(() => {
     const savedAt = now();
     insertActivePosition(position, savedAt);
@@ -816,6 +823,18 @@ export async function addActivePosition(position: ActivePosition, wallet?: BotWa
       );
     }
   });
+
+  const row = db.prepare("SELECT * FROM active_positions WHERE id = ?").get(position.id);
+  if (row) {
+    void import("../realtime/workerBroadcast").then(({ publishRealtimeFromWorker }) =>
+      publishRealtimeFromWorker({ type: "active_position:opened", payload: { position: row } })
+    ).catch(() => undefined);
+  }
+  if (wallet) {
+    void import("../realtime/workerBroadcast").then(({ publishRealtimeFromWorker }) =>
+      publishRealtimeFromWorker({ type: "wallet:updated", payload: { wallet } })
+    ).catch(() => undefined);
+  }
 
   return readState();
 }
@@ -848,6 +867,18 @@ export async function patchActivePosition(
     savedAt,
     id
   );
+
+  // Push the updated row to UI clients in real time. Dynamic import keeps the
+  // module graph clean for both the main server (broadcaster) and workers
+  // (workerBroadcast wraps an HTTP call). When called from the server itself
+  // the workerBroadcast HTTP roundtrip is to its own port — slight overhead
+  // but keeps the code path uniform across server/worker.
+  const updatedRow = db.prepare("SELECT * FROM active_positions WHERE id = ?").get(id);
+  if (updatedRow) {
+    void import("../realtime/workerBroadcast").then(({ publishRealtimeFromWorker }) =>
+      publishRealtimeFromWorker({ type: "active_position:updated", payload: { position: updatedRow } })
+    ).catch(() => undefined);
+  }
 
   return readState();
 }
@@ -956,6 +987,21 @@ export async function closeActivePosition(position: ClosedPosition, pnlUsd: numb
       `
     ).run(pnlUsd, new Date().toISOString(), savedAt, "default");
   });
+
+  // Broadcast close + wallet update so UI moves the row to closed list instantly
+  // and PnL today + balance refresh without a poll round-trip.
+  const closedRow = db.prepare("SELECT * FROM closed_positions WHERE id = ?").get(position.id);
+  if (closedRow) {
+    void import("../realtime/workerBroadcast").then(({ publishRealtimeFromWorker }) =>
+      publishRealtimeFromWorker({ type: "active_position:closed", payload: { position: closedRow } })
+    ).catch(() => undefined);
+  }
+  const walletRow = db.prepare("SELECT * FROM bot_wallet WHERE id = 'default'").get();
+  if (walletRow) {
+    void import("../realtime/workerBroadcast").then(({ publishRealtimeFromWorker }) =>
+      publishRealtimeFromWorker({ type: "wallet:updated", payload: { wallet: walletRow } })
+    ).catch(() => undefined);
+  }
 
   return readState();
 }

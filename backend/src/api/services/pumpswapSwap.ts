@@ -30,6 +30,8 @@ import { getJupiterSwapExecutionDetails } from "./jupiterSwap";
 import { createBotLog } from "./logs";
 import { closeTokenAccountIfEmpty } from "./ataRentRecovery";
 import { getActualTokenBalance } from "./tokenBalance";
+import { getCachedBlockhash, forceBlockhashRefresh } from "./caches/blockhashCache";
+import { sendBuyViaJito } from "./jitoSender";
 
 dotenv.config({
   path: path.resolve(__dirname, "../../helpers/.env")
@@ -83,25 +85,65 @@ async function sendAndConfirm(
   options: {
     shouldSend?: () => boolean | Promise<boolean>;
     onSignature?: (signature: string) => void | Promise<void>;
+    /** Buy paths only — try Jito bundle first for slot-adjacent landing. */
+    useJito?: boolean;
+    tokenMint?: string;
   }
 ): Promise<{ signature: string; signatureCount: number }> {
   const connection = getRaydiumConnection();
   const wallet = getTradingWallet();
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
-  const transaction = new Transaction({ blockhash, lastValidBlockHeight, feePayer: wallet.publicKey });
-  for (const ix of instructions) {
-    transaction.add(ix);
-  }
-  transaction.sign(wallet);
+  // Cached blockhash: background-refreshed every ~8s, saves ~80-100ms per send.
+  let { blockhash, lastValidBlockHeight } = await getCachedBlockhash(connection);
+  const buildTx = (hash: string, height: number) => {
+    const tx = new Transaction({ blockhash: hash, lastValidBlockHeight: height, feePayer: wallet.publicKey });
+    for (const ix of instructions) tx.add(ix);
+    tx.sign(wallet);
+    return tx;
+  };
+  let transaction = buildTx(blockhash, lastValidBlockHeight);
 
   if (options.shouldSend && !(await options.shouldSend())) {
     throw new Error("Swap aborted before send: trading was stopped");
   }
 
-  const signature = await connection.sendRawTransaction(transaction.serialize(), {
-    skipPreflight: false,
-    maxRetries: 3
-  });
+  let signature: string | null = null;
+
+  if (options.useJito) {
+    try {
+      const jitoResult = await sendBuyViaJito(connection, wallet, transaction, options.tokenMint);
+      signature = jitoResult.signature;
+    } catch (jitoErr) {
+      const msg = jitoErr instanceof Error ? jitoErr.message : String(jitoErr);
+      createBotLog({
+        level: "warn",
+        event: "BUY_JITO_FALLBACK",
+        message: `PumpSwap Jito bundle failed, falling back to RPC send: ${msg.slice(0, 120)}`,
+        tokenMint: options.tokenMint,
+        metadata: { reason: msg, route: "PumpSwap" }
+      });
+    }
+  }
+
+  if (!signature) {
+    try {
+      signature = await connection.sendRawTransaction(transaction.serialize(), {
+        skipPreflight: false,
+        maxRetries: 3
+      });
+    } catch (err) {
+      // Retry once on stale blockhash (cache TTL race).
+      const msg = err instanceof Error ? err.message.toLowerCase() : "";
+      if (!msg.includes("blockhash not found") && !msg.includes("blockhashnotfound")) throw err;
+      const fresh = await forceBlockhashRefresh(connection);
+      blockhash = fresh.blockhash;
+      lastValidBlockHeight = fresh.lastValidBlockHeight;
+      transaction = buildTx(blockhash, lastValidBlockHeight);
+      signature = await connection.sendRawTransaction(transaction.serialize(), {
+        skipPreflight: false,
+        maxRetries: 3
+      });
+    }
+  }
   await options.onSignature?.(signature);
   await connection.confirmTransaction(
     { signature, blockhash, lastValidBlockHeight },
@@ -120,6 +162,10 @@ export async function executePumpSwapBuy(
     onSignature?: (signature: string) => void | Promise<void>;
   } = {}
 ): Promise<PumpSwapSwapResult> {
+  const t0 = Date.now();
+  let tMetadata = t0;
+  let tBuild = t0;
+  let tSend = t0;
   try {
     const connection = getRaydiumConnection();
     const wallet = getTradingWallet();
@@ -128,21 +174,46 @@ export async function executePumpSwapBuy(
 
     const poolKey = new PublicKey(poolAddress);
     const swapState = await onlineSdk.swapSolanaState(poolKey, wallet.publicKey);
+    tMetadata = Date.now();
 
     const slippagePct = getSlippageBps() / 100; // SDK takes percentage
     const quoteLamports = new BN(Math.floor(amountSol * LAMPORTS_PER_SOL));
 
     // buyQuoteInput: I'm spending exactly `quoteLamports` SOL, want as much base as possible.
     const buyIxs = await offlineSdk.buyQuoteInput(swapState, quoteLamports, slippagePct);
+    tBuild = Date.now();
 
     const allIxs = [...buildComputeBudgetInstructions(), ...buyIxs];
-    const { signature, signatureCount } = await sendAndConfirm(allIxs, options);
+    // Jito disabled per user request — uncomment to re-enable.
+    const { signature, signatureCount } = await sendAndConfirm(allIxs, {
+      ...options
+      // useJito: true,
+      // tokenMint
+    });
+    tSend = Date.now();
 
     // Reuse Jupiter's execution-details reader — it just reads tx meta, not Jupiter-specific.
     const execDetails = await getJupiterSwapExecutionDetails({
       signature,
       tokenMint,
-      signatureCount
+      signatureCount,
+      side: "buy"
+    });
+    const tDone = Date.now();
+
+    createBotLog({
+      event: "BUY_TIMING",
+      message: `PumpSwap buy ${tokenMint.slice(0, 8)}… total=${tDone - t0}ms`,
+      tokenMint,
+      signature,
+      metadata: {
+        platform: "PumpSwap",
+        metadataMs: tMetadata - t0,
+        buildMs: tBuild - tMetadata,
+        sendConfirmMs: tSend - tBuild,
+        execDetailsMs: tDone - tSend,
+        totalMs: tDone - t0
+      }
     });
 
     return {
@@ -197,12 +268,21 @@ export async function executePumpSwapSell(
     const execDetails = await getJupiterSwapExecutionDetails({
       signature,
       tokenMint,
-      signatureCount
+      signatureCount,
+      side: "sell"
     });
 
     // Recover ~0.00204 SOL of ATA rent if the token account is now empty.
     // Best-effort: doesn't affect the sell result if it fails.
-    closeTokenAccountIfEmpty(connection, wallet, new PublicKey(tokenMint)).catch(() => undefined);
+    closeTokenAccountIfEmpty(connection, wallet, new PublicKey(tokenMint)).catch((error) => {
+      createBotLog({
+        level: "warn",
+        event: "ATA_CLOSE_UNHANDLED",
+        message: error instanceof Error ? error.message : "Unhandled ATA close rejection",
+        tokenMint,
+        metadata: { route: "PumpSwap" }
+      });
+    });
 
     const outputSol = execDetails.actualSolChange !== undefined ? Math.abs(execDetails.actualSolChange) : 0;
     return {
